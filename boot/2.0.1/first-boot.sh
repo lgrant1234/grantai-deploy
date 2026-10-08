@@ -361,7 +361,7 @@ else
   LOCAL_BASE="https://127.0.0.1:$HTTP_PORT"; LOCAL_CACERT="$ROOT/etc/tls.crt"
 fi
 printf 'LOCAL_BASE=%s\nLOCAL_CACERT=%s\n' "$LOCAL_BASE" "$LOCAL_CACERT" > "$ROOT/etc/local-tls.env"
-for f in "$ROOT/etc/foundry-tap.env" "$ROOT/etc/reviewer.env"; do
+for f in "$ROOT/etc/foundry-tap.env" "$ROOT/etc/agentcore-tap.env" "$ROOT/etc/reviewer.env"; do
   [ -s "$f" ] || continue
   sed -i -e "s|^GRANTAI_TAP_BASE=.*|GRANTAI_TAP_BASE=$LOCAL_BASE|" -e "s|^GRANTAI_TAP_CACERT=.*|GRANTAI_TAP_CACERT=$LOCAL_CACERT|" \
          -e "s|^GRANTAI_REVIEW_BASE=.*|GRANTAI_REVIEW_BASE=$LOCAL_BASE|" -e "s|^GRANTAI_REVIEW_CACERT=.*|GRANTAI_REVIEW_CACERT=$LOCAL_CACERT|" "$f"
@@ -460,6 +460,33 @@ EOF
   systemctl daemon-reload
   systemctl enable grantai-foundry-tap >/dev/null; systemctl restart grantai-foundry-tap
   echo "foundry tap enabled for $FOUNDRY_PROJECT_ENDPOINT"
+fi
+
+# ---------------------------------------------------------------- 11b2 AgentCore tap (AWS)
+if [ "$CLOUD" = aws ] && [ -n "${AGENTCORE_REGION:-}" ]; then
+  install -m 0755 "$SRC_DIR/grantai-agentcore-tap.py" "$ROOT/bin/grantai-agentcore-tap.py"
+  install -m 0644 "$SRC_DIR/grantai-agentcore-tap.service" /etc/systemd/system/grantai-agentcore-tap.service
+  if [ ! -s "$ROOT/etc/agentcore-tap.env" ]; then
+    MINT=$(curl -sk -m 10 -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+      -d '{"display":"agentcore-tap"}' -w '\n%{http_code}' "https://127.0.0.1:$HTTP_PORT/api/callers/static" || true)
+    MINT_CODE=$(printf '%s' "$MINT" | tail -1); MINT_BODY=$(printf '%s' "$MINT" | sed '$d')
+    [ "$MINT_CODE" = "200" ] || status_fail "could not mint the agentcore-tap caller token (HTTP $MINT_CODE)" 15
+    AC_TOKEN=$(printf '%s' "$MINT_BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin)["token"])')
+    umask 077
+    cat > "$ROOT/etc/agentcore-tap.env.new" <<EOF
+GRANTAI_AGENTCORE_REGION=$AGENTCORE_REGION
+GRANTAI_TAP_BASE=$LOCAL_BASE
+GRANTAI_TAP_TOKEN=$AC_TOKEN
+GRANTAI_TAP_CACERT=$LOCAL_CACERT
+GRANTAI_TAP_INTERVAL=30
+GRANTAI_TAP_STATE=$ROOT/var/agentcore-tap.state.json
+EOF
+    mv "$ROOT/etc/agentcore-tap.env.new" "$ROOT/etc/agentcore-tap.env"
+    chown root:grantai "$ROOT/etc/agentcore-tap.env"; chmod 0640 "$ROOT/etc/agentcore-tap.env"
+    umask 022
+  fi
+  systemctl daemon-reload; systemctl enable grantai-agentcore-tap >/dev/null; systemctl restart grantai-agentcore-tap
+  echo "agentcore tap enabled for region $AGENTCORE_REGION"
 fi
 
 # ---------------------------------------------------------------- 11c reviewer (always on)

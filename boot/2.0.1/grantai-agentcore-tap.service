@@ -1,0 +1,21 @@
+[Unit]
+Description=GrantAi AgentCore tap (records what Amazon Bedrock AgentCore agents did)
+After=grantai.service network-online.target
+Wants=grantai.service
+
+[Service]
+Type=simple
+User=grantai
+Group=grantai
+EnvironmentFile=/opt/grantai/etc/agentcore-tap.env
+ExecStart=/usr/bin/python3 /opt/grantai/bin/grantai-agentcore-tap.py
+Restart=always
+RestartSec=15
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/grantai/var
+
+[Install]
+WantedBy=multi-user.target
