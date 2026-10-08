@@ -12,7 +12,7 @@ when it ends, reads continue and writes stop until a licence key is loaded.
 - Virtual network with a private subnet for Postgres; network security group admitting the service
   port only from the client range you give (bearer authentication applies as well).
 - Collector VM (Trusted Launch, system-assigned identity) from the community gallery image
-  `grantai-655c6c15-1c00-4d85-aa47-d8e1b0ed5e38` (Ubuntu 22.04 LTS or RHEL 9), running the GrantAi server, the Foundry tap and the reviewer.
+  `grantai-655c6c15-1c00-4d85-aa47-d8e1b0ed5e38` (Ubuntu 22.04 LTS; Red Hat Enterprise Linux 9 is available through a private gallery share, since Azure does not allow images derived from a marketplace image with a billing plan in community galleries), running the GrantAi server, the Foundry tap and the reviewer.
 - Postgres Flexible Server (private access, auto-grow), Key Vault (RBAC, purge protection) holding
   the bootstrap token, the install identity, the export signing key and the licence, a storage
   account with the immutable `audit-cold` container (7-year policy, unlocked).

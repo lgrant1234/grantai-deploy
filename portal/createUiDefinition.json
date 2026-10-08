@@ -21,16 +21,12 @@
         "type": "Microsoft.Common.DropDown",
         "label": "Operating system",
         "defaultValue": "Ubuntu 22.04 LTS",
-        "toolTip": "Both images are built from the same release.",
+        "toolTip": "The trial image is Ubuntu 22.04 LTS. Red Hat Enterprise Linux 9 is available through a private gallery share: contact SolonAI with your tenant id.",
         "constraints": {
           "allowedValues": [
             {
               "label": "Ubuntu 22.04 LTS",
               "value": "ubuntu-22.04"
-            },
-            {
-              "label": "Red Hat Enterprise Linux 9",
-              "value": "rhel-9"
             }
           ],
           "required": true
@@ -211,7 +207,7 @@
     "outputs": {
       "location": "[location()]",
       "osImage": "[basics('osImage')]",
-      "communityImageId": "[concat('/CommunityGalleries/grantai-655c6c15-1c00-4d85-aa47-d8e1b0ed5e38/Images/', if(equals(basics('osImage'),'rhel-9'),'grantai-collector-rhel9','grantai-collector-u2204'), '/Versions/2.0.1')]",
+      "communityImageId": "/CommunityGalleries/grantai-655c6c15-1c00-4d85-aa47-d8e1b0ed5e38/Images/grantai-collector-u2204/Versions/2.0.1",
       "bootFilesBaseUrl": "https://raw.githubusercontent.com/lgrant1234/grantai-deploy/main/boot/2.0.1",
       "trialEmail": "[if(equals(steps('licence').mode,'trial'), steps('licence').trialEmail, '')]",
       "licenseJwt": "[if(equals(steps('licence').mode,'jwt'), steps('licence').licenseJwt, '')]",
