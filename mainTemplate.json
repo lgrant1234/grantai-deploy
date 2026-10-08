@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.42.1.51946",
-      "templateHash": "12603306604731084046"
+      "templateHash": "2688053547232218048"
     }
   },
   "parameters": {
@@ -223,6 +223,39 @@
       "defaultValue": "",
       "metadata": {
         "description": "Optional: obtain a publicly trusted TLS certificate for the public FQDN from Let's Encrypt (ACME HTTP-01) at first boot and renew it automatically. Needs enablePublicIp and admits port 80 from the internet for the challenge. Platform-hosted agents (Foundry) require a trusted certificate to call the collector as a tool."
+      }
+    },
+    "llmEndpoint": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Model endpoint for the console's AI Query: your Azure OpenAI or Foundry resource, e.g. https://<account>.openai.azure.com. Empty disables AI Query; the record itself needs no model."
+      }
+    },
+    "llmDeployment": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Chat deployment name on that resource (e.g. gpt-4.1-mini)."
+      }
+    },
+    "llmApiKey": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "API key for the model resource. Empty: the collector VM's managed identity is used (grant it Cognitive Services OpenAI User on the resource)."
+      }
+    },
+    "llmProvider": {
+      "type": "string",
+      "defaultValue": "azure-openai",
+      "allowedValues": [
+        "azure-openai",
+        "openai",
+        "anthropic"
+      ],
+      "metadata": {
+        "description": "Model provider: azure-openai (default), openai or anthropic (key required for the last two)."
       }
     },
     "reviewWebhookUrl": {
@@ -449,6 +482,18 @@
       ]
     },
     {
+      "condition": "[not(empty(parameters('llmApiKey')))]",
+      "type": "Microsoft.KeyVault/vaults/secrets",
+      "apiVersion": "2023-07-01",
+      "name": "[format('{0}/{1}', variables('kvName'), 'grantai-llm-key')]",
+      "properties": {
+        "value": "[parameters('llmApiKey')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.KeyVault/vaults', variables('kvName'))]"
+      ]
+    },
+    {
       "type": "Microsoft.Storage/storageAccounts",
       "apiVersion": "2023-05-01",
       "name": "[variables('saName')]",
@@ -637,13 +682,14 @@
             "[format('{0}/grantai-reviewer.service{1}', parameters('bootFilesBaseUrl'), if(empty(parameters('bootFilesSas')), '', format('?{0}', parameters('bootFilesSas'))))]",
             "[format('{0}/review-policies.json{1}', parameters('bootFilesBaseUrl'), if(empty(parameters('bootFilesSas')), '', format('?{0}', parameters('bootFilesSas'))))]"
           ],
-          "commandToExecute": "[format('mkdir -p /etc/grantai && echo {0} | base64 -d > /etc/grantai/firstboot.env && chmod 600 /etc/grantai/firstboot.env && bash ./first-boot.sh /etc/grantai/firstboot.env', base64(join(createArray(format('KEYVAULT_NAME={0}', variables('kvName')), format('PG_HOST={0}', reference(resourceId('Microsoft.DBforPostgreSQL/flexibleServers', variables('pgName')), '2023-12-01-preview').fullyQualifiedDomainName), 'PG_DB=grantai', format('PG_USER={0}', parameters('pgAdminUser')), 'PG_PASSWORD_SECRET=grantai-pg-password', format('STORAGE_ACCOUNT={0}', variables('saName')), format('STORAGE_RG={0}', resourceGroup().name), format('COLD_CONTAINER={0}', parameters('coldContainer')), format('SUBSCRIPTION_ID={0}', subscription().subscriptionId), format('HTTP_PORT={0}', parameters('httpPort')), format('LICENSE_KEY={0}', parameters('licenseKey')), format('TRIAL_EMAIL={0}', parameters('trialEmail')), format('LICENSE_JWT_SECRET={0}', parameters('licenseJwtSecretName')), format('LICENSE_DEV_PUBKEY_PEM={0}', replace(parameters('licenseDevPubkeyPem'), '\n', '\\n')), format('TLS_CERT_SECRET={0}', parameters('tlsCertSecretName')), format('PUBLIC_FQDN={0}', if(parameters('enablePublicIp'), reference(resourceId('Microsoft.Network/publicIPAddresses', format('{0}-pip', parameters('namePrefix'))), '2023-11-01').dnsSettings.fqdn, '')), format('PACKAGE_URL={0}', parameters('packageUrl')), format('PACKAGE_SHA256={0}', parameters('packageSha256')), format('AUTH_ISSUER={0}', parameters('authIssuer')), format('AUTH_AUDIENCE={0}', parameters('authAudience')), format('FOUNDRY_PROJECT_ENDPOINT={0}', parameters('foundryProjectEndpoint')), format('REVIEW_WEBHOOK_URL={0}', parameters('reviewWebhookUrl')), format('ACME_EMAIL={0}', parameters('acmeEmail'))), '\n')))]"
+          "commandToExecute": "[format('mkdir -p /etc/grantai && echo {0} | base64 -d > /etc/grantai/firstboot.env && chmod 600 /etc/grantai/firstboot.env && bash ./first-boot.sh /etc/grantai/firstboot.env', base64(join(createArray(format('KEYVAULT_NAME={0}', variables('kvName')), format('PG_HOST={0}', reference(resourceId('Microsoft.DBforPostgreSQL/flexibleServers', variables('pgName')), '2023-12-01-preview').fullyQualifiedDomainName), 'PG_DB=grantai', format('PG_USER={0}', parameters('pgAdminUser')), 'PG_PASSWORD_SECRET=grantai-pg-password', format('STORAGE_ACCOUNT={0}', variables('saName')), format('STORAGE_RG={0}', resourceGroup().name), format('COLD_CONTAINER={0}', parameters('coldContainer')), format('SUBSCRIPTION_ID={0}', subscription().subscriptionId), format('HTTP_PORT={0}', parameters('httpPort')), format('LICENSE_KEY={0}', parameters('licenseKey')), format('TRIAL_EMAIL={0}', parameters('trialEmail')), format('LICENSE_JWT_SECRET={0}', parameters('licenseJwtSecretName')), format('LICENSE_DEV_PUBKEY_PEM={0}', replace(parameters('licenseDevPubkeyPem'), '\n', '\\n')), format('TLS_CERT_SECRET={0}', parameters('tlsCertSecretName')), format('PUBLIC_FQDN={0}', if(parameters('enablePublicIp'), reference(resourceId('Microsoft.Network/publicIPAddresses', format('{0}-pip', parameters('namePrefix'))), '2023-11-01').dnsSettings.fqdn, '')), format('PACKAGE_URL={0}', parameters('packageUrl')), format('PACKAGE_SHA256={0}', parameters('packageSha256')), format('AUTH_ISSUER={0}', parameters('authIssuer')), format('AUTH_AUDIENCE={0}', parameters('authAudience')), format('FOUNDRY_PROJECT_ENDPOINT={0}', parameters('foundryProjectEndpoint')), format('REVIEW_WEBHOOK_URL={0}', parameters('reviewWebhookUrl')), format('ACME_EMAIL={0}', parameters('acmeEmail')), format('LLM_PROVIDER={0}', parameters('llmProvider')), format('LLM_ENDPOINT={0}', parameters('llmEndpoint')), format('LLM_DEPLOYMENT={0}', parameters('llmDeployment')), format('LLM_KEY_SECRET={0}', if(empty(parameters('llmApiKey')), '', 'grantai-llm-key'))), '\n')))]"
         }
       },
       "dependsOn": [
         "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers/immutabilityPolicies', variables('saName'), 'default', parameters('coldContainer'), 'default')]",
         "[resourceId('Microsoft.KeyVault/vaults', variables('kvName'))]",
         "[resourceId('Microsoft.KeyVault/vaults/secrets', variables('kvName'), if(empty(parameters('licenseJwtSecretName')), 'grantai-license-jwt', parameters('licenseJwtSecretName')))]",
+        "[resourceId('Microsoft.KeyVault/vaults/secrets', variables('kvName'), 'grantai-llm-key')]",
         "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers', variables('pgName'))]",
         "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers/databases', variables('pgName'), 'grantai')]",
         "[resourceId('Microsoft.KeyVault/vaults/secrets', variables('kvName'), 'grantai-pg-password')]",

@@ -29,6 +29,14 @@ and Export tabs. To capture Azure AI Foundry agents, grant the collector VM's id
 **Foundry User** role on your project (one role assignment) if you did not pass the project endpoint
 at deployment, then redeploy with it set.
 
+## AI Query uses your model
+
+The record needs no language model. If you want to ask questions in plain language on the console,
+give the form your own Azure OpenAI or Foundry endpoint and deployment, and either an API key
+(stored in the deployment's Key Vault) or grant the collector VM's identity **Cognitive Services
+OpenAI User** on that resource. Only recalled records are sent to your deployment; nothing goes to
+SolonAI or any third party.
+
 ## Verify an export without GrantAi software
 
     python3 tools/grantai-verify-bundle.py grantai-export-<time>.json --trust-fingerprint <sha256 from the collector's /health>

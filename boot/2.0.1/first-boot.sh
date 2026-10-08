@@ -230,6 +230,12 @@ if [ -z "$TOKEN" ]; then
   kv_put "$TOKEN_SECRET" "$TOKEN"
 fi
 
+# ---------------------------------------------------------------- 6b model endpoint key (AI Query)
+STEP=model-key
+LLM_API_KEY=""
+if [ -n "${LLM_KEY_SECRET:-}" ]; then LLM_API_KEY=$(kv_get "$LLM_KEY_SECRET" || true); fi
+[ -z "${LLM_ENDPOINT:-}" ] || echo "model endpoint: ${LLM_PROVIDER:-azure-openai} ${LLM_ENDPOINT} deployment ${LLM_DEPLOYMENT:-?} auth $([ -n "$LLM_API_KEY" ] && echo key || echo managed-identity)"
+
 # ---------------------------------------------------------------- 7 postgres
 STEP=postgres
 PG_PASSWORD=$(kv_get "$PG_PASSWORD_SECRET")
@@ -342,6 +348,10 @@ GRANTAI_DATASET=api
 GRANTAI_LICENSE_FILE=$ROOT/home/license.jwt
 GRANTAI_HTTP_TOKEN=$TOKEN
 GRANTAI_EXPORT_SIGNING_KEY=$ROOT/etc/export-signing.key
+GRANTAI_LLM_PROVIDER=${LLM_PROVIDER:-}
+GRANTAI_LLM_ENDPOINT=${LLM_ENDPOINT:-}
+GRANTAI_LLM_DEPLOYMENT=${LLM_DEPLOYMENT:-}
+GRANTAI_LLM_API_KEY=$LLM_API_KEY
 GRANTAI_HTTP_PORT=$HTTP_PORT
 LD_LIBRARY_PATH=$ROOT/current/lib
 EOF

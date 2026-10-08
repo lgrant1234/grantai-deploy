@@ -200,6 +200,46 @@
               "required": false
             },
             "visible": true
+          },
+          {
+            "name": "llmEndpoint",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Model endpoint for AI Query (optional)",
+            "defaultValue": "",
+            "toolTip": "Your own Azure OpenAI or Foundry resource, e.g. https://<account>.openai.azure.com. Used only to answer plain-language questions over records the collector has already recalled. The record itself needs no model.",
+            "constraints": {
+              "required": false,
+              "regex": "^$|^https://[^\\s]+$",
+              "validationMessage": "URL or empty"
+            },
+            "visible": true
+          },
+          {
+            "name": "llmDeployment",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Chat deployment name",
+            "defaultValue": "",
+            "toolTip": "e.g. gpt-4.1-mini",
+            "constraints": {
+              "required": false
+            },
+            "visible": "[not(empty(steps('agents').llmEndpoint))]"
+          },
+          {
+            "name": "llmApiKey",
+            "type": "Microsoft.Common.PasswordBox",
+            "label": {
+              "password": "Model API key (leave empty to use the collector's identity)",
+              "confirmPassword": "Confirm"
+            },
+            "toolTip": "Stored in the deployment's Key Vault. If empty, grant the collector VM's identity 'Cognitive Services OpenAI User' on the resource.",
+            "constraints": {
+              "required": false
+            },
+            "options": {
+              "hideConfirmation": true
+            },
+            "visible": "[not(empty(steps('agents').llmEndpoint))]"
           }
         ]
       }
@@ -218,7 +258,10 @@
       "sshPublicKey": "[steps('network').sshPublicKey]",
       "foundryProjectEndpoint": "[steps('agents').foundryProjectEndpoint]",
       "agentSourcePrefix": "[steps('agents').agentSourcePrefix]",
-      "reviewWebhookUrl": "[steps('agents').reviewWebhookUrl]"
+      "reviewWebhookUrl": "[steps('agents').reviewWebhookUrl]",
+      "llmEndpoint": "[steps('agents').llmEndpoint]",
+      "llmDeployment": "[steps('agents').llmDeployment]",
+      "llmApiKey": "[steps('agents').llmApiKey]"
     }
   }
 }
