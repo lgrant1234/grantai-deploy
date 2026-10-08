@@ -1,0 +1,247 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  GrantAi system of record for AI agents: collector EC2 instance, private RDS for PostgreSQL,
+  Secrets Manager secrets, S3 cold tier with Object Lock, first-boot self-check. Nothing leaves the
+  account except the licence check.
+
+Parameters:
+  NamePrefix: { Type: String, Default: grantai }
+  AmiId:
+    Type: String
+    Default: ''
+    Description: GrantAi collector AMI (built by Deploy/image, shared to this account). Empty - use the base Ubuntu 22.04 AMI and install PackageUrl.
+  BaseAmiParameter:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id
+    Description: Base image when AmiId is empty.
+  PackageUrl: { Type: String, Default: '', Description: Release zip URL when AmiId is empty. }
+  PackageSha256: { Type: String, Default: '' }
+  BootFilesBaseUrl: { Type: String, Default: https://raw.githubusercontent.com/lgrant1234/grantai-deploy/main/boot/2.0.1 }
+  InstanceType: { Type: String, Default: t3.medium }
+  KeyPairName: { Type: String, Default: '', Description: EC2 key pair for SSH (empty disables SSH). }
+  AllowedClientCidr: { Type: String, Description: CIDR admitted on the service port (and SSH when a key pair is set). }
+  AgentSourceCidr: { Type: String, Default: '', Description: Optional second CIDR admitted on the service port (platform agents). }
+  HttpPort: { Type: Number, Default: 8443 }
+  PublicHostname: { Type: String, Default: '', Description: DNS name you point at the collector (Route 53 record created when HostedZoneId is set). Needed for a Let's Encrypt certificate. }
+  HostedZoneId: { Type: String, Default: '' }
+  AcmeEmail: { Type: String, Default: '', Description: Let's Encrypt contact; empty - self-signed certificate. }
+  DbInstanceClass: { Type: String, Default: db.t4g.micro }
+  DbAllocatedStorageGb: { Type: Number, Default: 32 }
+  DbBackupRetentionDays: { Type: Number, Default: 7 }
+  ColdRetentionDays: { Type: Number, Default: 2557 }
+  LicenseKey: { Type: String, Default: '', NoEcho: true }
+  TrialEmail: { Type: String, Default: '' }
+  LicenseJwt: { Type: String, Default: '', NoEcho: true, Description: Signed licence file contents (one line). }
+  LlmEndpoint: { Type: String, Default: '', Description: Model endpoint for AI Query (e.g. your Bedrock-compatible or OpenAI-compatible endpoint; empty disables AI Query). }
+  LlmDeployment: { Type: String, Default: '' }
+  LlmApiKey: { Type: String, Default: '', NoEcho: true }
+  LlmProvider: { Type: String, Default: openai, AllowedValues: [azure-openai, openai, anthropic] }
+  ReviewWebhookUrl: { Type: String, Default: '', NoEcho: true }
+  AgentCoreRegion: { Type: String, Default: '', Description: Region of a Bedrock AgentCore deployment to capture (optional; the tap reads its observability feed). }
+
+Conditions:
+  UseAmi: !Not [!Equals [!Ref AmiId, '']]
+  HasKeyPair: !Not [!Equals [!Ref KeyPairName, '']]
+  HasAgentCidr: !Not [!Equals [!Ref AgentSourceCidr, '']]
+  HasAcme: !Not [!Equals [!Ref AcmeEmail, '']]
+  HasDns: !And [!Not [!Equals [!Ref PublicHostname, '']], !Not [!Equals [!Ref HostedZoneId, '']]]
+  HasLicenseJwt: !Not [!Equals [!Ref LicenseJwt, '']]
+  HasLlmKey: !Not [!Equals [!Ref LlmApiKey, '']]
+
+Resources:
+  # ---------------------------------------------------------------- network
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties: { CidrBlock: 10.60.0.0/16, EnableDnsSupport: true, EnableDnsHostnames: true, Tags: [{ Key: Name, Value: !Sub '${NamePrefix}-vpc' }] }
+  InternetGateway: { Type: AWS::EC2::InternetGateway }
+  VpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties: { VpcId: !Ref Vpc, InternetGatewayId: !Ref InternetGateway }
+  AppSubnet:
+    Type: AWS::EC2::Subnet
+    Properties: { VpcId: !Ref Vpc, CidrBlock: 10.60.1.0/24, AvailabilityZone: !Select [0, !GetAZs ''], MapPublicIpOnLaunch: true }
+  DbSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties: { VpcId: !Ref Vpc, CidrBlock: 10.60.2.0/24, AvailabilityZone: !Select [0, !GetAZs ''] }
+  DbSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties: { VpcId: !Ref Vpc, CidrBlock: 10.60.3.0/24, AvailabilityZone: !Select [1, !GetAZs ''] }
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties: { VpcId: !Ref Vpc }
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VpcGatewayAttachment
+    Properties: { RouteTableId: !Ref PublicRouteTable, DestinationCidrBlock: 0.0.0.0/0, GatewayId: !Ref InternetGateway }
+  AppSubnetRoute:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref AppSubnet, RouteTableId: !Ref PublicRouteTable }
+  CollectorSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: GrantAi collector
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: !Ref HttpPort, ToPort: !Ref HttpPort, CidrIp: !Ref AllowedClientCidr }
+        - !If [HasAgentCidr, { IpProtocol: tcp, FromPort: !Ref HttpPort, ToPort: !Ref HttpPort, CidrIp: !Ref AgentSourceCidr }, !Ref 'AWS::NoValue']
+        - !If [HasKeyPair, { IpProtocol: tcp, FromPort: 22, ToPort: 22, CidrIp: !Ref AllowedClientCidr }, !Ref 'AWS::NoValue']
+        - !If [HasAcme, { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0 }, !Ref 'AWS::NoValue']
+  DbSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: GrantAi Postgres (collector only)
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 5432, ToPort: 5432, SourceSecurityGroupId: !Ref CollectorSg }
+
+  # ---------------------------------------------------------------- secrets
+  PgPasswordSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${NamePrefix}/pg-password'
+      GenerateSecretString: { PasswordLength: 32, ExcludePunctuation: true }
+  LicenseJwtSecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: HasLicenseJwt
+    Properties: { Name: !Sub '${NamePrefix}/license-jwt', SecretString: !Ref LicenseJwt }
+  LlmKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: HasLlmKey
+    Properties: { Name: !Sub '${NamePrefix}/llm-key', SecretString: !Ref LlmApiKey }
+
+  # ---------------------------------------------------------------- cold tier
+  ColdBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub '${NamePrefix}-audit-cold-${AWS::AccountId}'
+      ObjectLockEnabled: true
+      ObjectLockConfiguration:
+        ObjectLockEnabled: Enabled
+        Rule: { DefaultRetention: { Mode: COMPLIANCE, Days: !Ref ColdRetentionDays } }
+      VersioningConfiguration: { Status: Enabled }
+      BucketEncryption: { ServerSideEncryptionConfiguration: [{ ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 } }] }
+      PublicAccessBlockConfiguration: { BlockPublicAcls: true, IgnorePublicAcls: true, BlockPublicPolicy: true, RestrictPublicBuckets: true }
+
+  # ---------------------------------------------------------------- database
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties: { DBSubnetGroupDescription: GrantAi, SubnetIds: [!Ref DbSubnetA, !Ref DbSubnetB] }
+  Db:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      Engine: postgres
+      EngineVersion: '16'
+      DBInstanceClass: !Ref DbInstanceClass
+      AllocatedStorage: !Ref DbAllocatedStorageGb
+      MaxAllocatedStorage: 1024
+      StorageType: gp3
+      StorageEncrypted: true
+      DBName: grantai
+      MasterUsername: grantaiadmin
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${PgPasswordSecret}}}'
+      DBSubnetGroupName: !Ref DbSubnetGroup
+      VPCSecurityGroups: [!Ref DbSg]
+      PubliclyAccessible: false
+      BackupRetentionPeriod: !Ref DbBackupRetentionDays
+      DeletionProtection: false
+
+  # ---------------------------------------------------------------- identity
+  CollectorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement: [{ Effect: Allow, Principal: { Service: ec2.amazonaws.com }, Action: sts:AssumeRole }]
+      Policies:
+        - PolicyName: grantai-collector
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [secretsmanager:GetSecretValue, secretsmanager:CreateSecret, secretsmanager:PutSecretValue, secretsmanager:DescribeSecret, secretsmanager:TagResource]
+                Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${NamePrefix}/*'
+              - Effect: Allow
+                Action: [s3:PutObject, s3:GetObject, s3:ListBucket, s3:GetBucketLocation]
+                Resource: [!GetAtt ColdBucket.Arn, !Sub '${ColdBucket.Arn}/*']
+              - Effect: Allow
+                Action: [logs:DescribeLogGroups, logs:DescribeLogStreams, logs:FilterLogEvents, logs:GetLogEvents, bedrock-agentcore:ListAgentRuntimes, bedrock-agentcore:GetAgentRuntime]
+                Resource: '*'
+  CollectorProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties: { Roles: [!Ref CollectorRole] }
+
+  # ---------------------------------------------------------------- collector
+  Collector:
+    Type: AWS::EC2::Instance
+    DependsOn: [Db, ColdBucket]
+    Properties:
+      ImageId: !If [UseAmi, !Ref AmiId, !Ref BaseAmiParameter]
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref CollectorProfile
+      KeyName: !If [HasKeyPair, !Ref KeyPairName, !Ref 'AWS::NoValue']
+      SubnetId: !Ref AppSubnet
+      SecurityGroupIds: [!Ref CollectorSg]
+      BlockDeviceMappings: [{ DeviceName: /dev/sda1, Ebs: { VolumeSize: 64, VolumeType: gp3, Encrypted: true } }]
+      MetadataOptions: { HttpTokens: required, HttpPutResponseHopLimit: 1 }
+      Tags: [{ Key: Name, Value: !Sub '${NamePrefix}-collector' }]
+      UserData:
+        Fn::Base64: !Sub
+          - |
+            #!/bin/bash
+            set -euo pipefail
+            mkdir -p /etc/grantai
+            cat > /etc/grantai/firstboot.env <<'ENV'
+            CLOUD=aws
+            AWS_REGION=${AWS::Region}
+            SECRET_PREFIX=${NamePrefix}
+            PG_HOST=${DbHost}
+            PG_DB=grantai
+            PG_USER=grantaiadmin
+            PG_PASSWORD_SECRET=${NamePrefix}/pg-password
+            S3_BUCKET=${ColdBucket}
+            COLD_CONTAINER=audit-cold
+            HTTP_PORT=${HttpPort}
+            LICENSE_KEY=${LicenseKey}
+            TRIAL_EMAIL=${TrialEmail}
+            LICENSE_JWT_SECRET=${LicenseJwtSecretName}
+            PUBLIC_FQDN=${PublicHostname}
+            ACME_EMAIL=${AcmeEmail}
+            PACKAGE_URL=${PackageUrl}
+            PACKAGE_SHA256=${PackageSha256}
+            LLM_PROVIDER=${LlmProvider}
+            LLM_ENDPOINT=${LlmEndpoint}
+            LLM_DEPLOYMENT=${LlmDeployment}
+            LLM_KEY_SECRET=${LlmKeySecretName}
+            REVIEW_WEBHOOK_URL=${ReviewWebhookUrl}
+            AGENTCORE_REGION=${AgentCoreRegion}
+            ENV
+            chmod 600 /etc/grantai/firstboot.env
+            mkdir -p /opt/grantai/boot && cd /opt/grantai/boot
+            for f in first-boot.sh grantai.service grantai-ctl grantai-selfcheck.py grantai-foundry-tap.py grantai-foundry-tap.service grantai-reviewer.py grantai-reviewer.service review-policies.json grantai-agentcore-tap.py grantai-agentcore-tap.service; do
+              curl -sfS -L -o "$f" "${BootFilesBaseUrl}/$f" || true
+            done
+            bash ./first-boot.sh /etc/grantai/firstboot.env > /var/log/grantai-userdata.log 2>&1 || true
+          - DbHost: !GetAtt Db.Endpoint.Address
+            LicenseJwtSecretName: !If [HasLicenseJwt, !Sub '${NamePrefix}/license-jwt', '']
+            LlmKeySecretName: !If [HasLlmKey, !Sub '${NamePrefix}/llm-key', '']
+  CollectorEip:
+    Type: AWS::EC2::EIP
+    Properties: { Domain: vpc, InstanceId: !Ref Collector }
+  DnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: HasDns
+    Properties: { HostedZoneId: !Ref HostedZoneId, Name: !Ref PublicHostname, Type: A, TTL: '60', ResourceRecords: [!Ref CollectorEip] }
+
+Outputs:
+  CollectorPublicIp: { Value: !Ref CollectorEip }
+  HealthUrl: { Value: !Sub 'https://${CollectorEip}:${HttpPort}/health' }
+  ConsoleUrl: { Value: !Sub 'https://${CollectorEip}:${HttpPort}/audit' }
+  TokenSecret: { Value: !Sub '${NamePrefix}/http-token', Description: 'aws secretsmanager get-secret-value --secret-id <this> --query SecretString --output text' }
+  DatabaseEndpoint: { Value: !GetAtt Db.Endpoint.Address }
+  ColdBucketName: { Value: !Ref ColdBucket }
+  NextSteps:
+    Value: !Sub 'Console at https://${CollectorEip}:${HttpPort}/audit (or your PublicHostname). Token: aws secretsmanager get-secret-value --secret-id ${NamePrefix}/http-token --query SecretString --output text. First-boot result: /opt/grantai/var/firstboot-status.json on the instance.'

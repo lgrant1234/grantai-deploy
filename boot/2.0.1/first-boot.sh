@@ -83,13 +83,42 @@ kv_put() {  # $1 name, $2 value
 }
 urlencode() { python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"; }
 
+# Cloud-neutral secret store: Key Vault on Azure, Secrets Manager on AWS (instance role, awscli).
+CLOUD="${CLOUD:-azure}"
+secret_get() {  # $1 name -> value on stdout, empty if absent
+  if [ "$CLOUD" = aws ]; then
+    aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id "$1" --query SecretString --output text 2>/dev/null || true
+  else kv_get "$1"; fi
+}
+secret_put() {  # $1 name, $2 value
+  if [ "$CLOUD" = aws ]; then
+    if aws secretsmanager describe-secret --region "$AWS_REGION" --secret-id "$1" >/dev/null 2>&1; then
+      aws secretsmanager put-secret-value --region "$AWS_REGION" --secret-id "$1" --secret-string "$2" >/dev/null
+    else
+      aws secretsmanager create-secret --region "$AWS_REGION" --name "$1" --secret-string "$2" >/dev/null
+    fi
+  else kv_put "$1" "$2"; fi
+}
+
 # ---------------------------------------------------------------- 1 preflight
 STEP=preflight
 timedatectl show -p NTPSynchronized --value | grep -q yes || echo "warning: clock not yet NTP-synchronised"
-curl -sS -m 5 -H Metadata:true 'http://169.254.169.254/metadata/instance?api-version=2021-02-01' -o /tmp/imds.json \
-  || status_fail "IMDS not reachable; is this an Azure VM with a managed identity?" 10
-KV_TOKEN=$(imds_token https://vault.azure.net) || status_fail "no Key Vault token from the managed identity" 10
-ARM_TOKEN=$(imds_token https://management.azure.com/) || status_fail "no ARM token from the managed identity" 10
+if [ "$CLOUD" = aws ]; then
+  command -v aws >/dev/null || {
+    echo "installing the AWS CLI"
+    if command -v apt-get >/dev/null; then DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq unzip curl >/dev/null; fi
+    curl -sS -m 120 -o /tmp/awscli.zip "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" && (cd /tmp && unzip -qo awscli.zip && ./aws/install >/dev/null) && rm -rf /tmp/aws /tmp/awscli.zip
+  }
+  aws sts get-caller-identity --region "$AWS_REGION" >/dev/null 2>&1 || status_fail "the instance role cannot call AWS (no instance profile?)" 10
+  # Secret names on AWS carry the stack prefix
+  INSTALL_ID_SECRET="${SECRET_PREFIX:-grantai}/install-id"; TOKEN_SECRET="${SECRET_PREFIX:-grantai}/http-token"
+  SIGN_SECRET="${SECRET_PREFIX:-grantai}/export-signing-key"; SIGN_PUB_SECRET="${SECRET_PREFIX:-grantai}/export-signing-pub"
+else
+  curl -sS -m 5 -H Metadata:true 'http://169.254.169.254/metadata/instance?api-version=2021-02-01' -o /tmp/imds.json \
+    || status_fail "IMDS not reachable; is this an Azure VM with a managed identity?" 10
+  KV_TOKEN=$(imds_token https://vault.azure.net) || status_fail "no Key Vault token from the managed identity" 10
+  ARM_TOKEN=$(imds_token https://management.azure.com/) || status_fail "no ARM token from the managed identity" 10
+fi
 VM_FQDN="${PUBLIC_FQDN:-$(hostname -f 2>/dev/null || hostname)}"
 VM_IP=$(hostname -I | awk '{print $1}')
 
@@ -181,14 +210,14 @@ export LD_LIBRARY_PATH="$ROOT/current/lib"
 
 # ---------------------------------------------------------------- 4 licence
 STEP=licence
-EXISTING_INSTALL_ID=$(kv_get "$INSTALL_ID_SECRET")
+EXISTING_INSTALL_ID=$(secret_get "$INSTALL_ID_SECRET")
 ACT=("$ROOT/current/bin/grantai-activate" --server)
 [ -n "$EXISTING_INSTALL_ID" ] && ACT+=(--install-id "$EXISTING_INSTALL_ID")
 export GRANTAI_API_URL="$API_URL" GRANTAI_HOME="$ROOT/home"
 # Egress-free path: a licence JWT handed over as a file and kept as a Key Vault
 # secret (LICENSE_JWT_SECRET). Used when the tenant cannot reach solonai.com.
 if [ -n "${LICENSE_JWT_SECRET:-}" ]; then
-  JWT=$(kv_get "$LICENSE_JWT_SECRET")
+  JWT=$(secret_get "$LICENSE_JWT_SECRET")
   [ -n "$JWT" ] || status_fail "secret $LICENSE_JWT_SECRET is empty" 11
   umask 077; printf '%s\n' "$JWT" > "$ROOT/home/license.jwt"; umask 022
   chown grantai:grantai "$ROOT/home/license.jwt"
@@ -219,37 +248,42 @@ STEP=install-id
 if [ -n "$EXISTING_INSTALL_ID" ]; then
   [ "$EXISTING_INSTALL_ID" = "$INSTALL_ID" ] || status_fail "licence install_id $INSTALL_ID differs from the identity in Key Vault $EXISTING_INSTALL_ID" 12
 else
-  kv_put "$INSTALL_ID_SECRET" "$INSTALL_ID"
+  secret_put "$INSTALL_ID_SECRET" "$INSTALL_ID"
 fi
 
 # ---------------------------------------------------------------- 6 bootstrap token
 STEP=token
-TOKEN=$(kv_get "$TOKEN_SECRET")
+TOKEN=$(secret_get "$TOKEN_SECRET")
 if [ -z "$TOKEN" ]; then
   TOKEN=$(openssl rand -hex 32)
-  kv_put "$TOKEN_SECRET" "$TOKEN"
+  secret_put "$TOKEN_SECRET" "$TOKEN"
 fi
 
 # ---------------------------------------------------------------- 6b model endpoint key (AI Query)
 STEP=model-key
 LLM_API_KEY=""
-if [ -n "${LLM_KEY_SECRET:-}" ]; then LLM_API_KEY=$(kv_get "$LLM_KEY_SECRET" || true); fi
+if [ -n "${LLM_KEY_SECRET:-}" ]; then LLM_API_KEY=$(secret_get "$LLM_KEY_SECRET" || true); fi
 [ -z "${LLM_ENDPOINT:-}" ] || echo "model endpoint: ${LLM_PROVIDER:-azure-openai} ${LLM_ENDPOINT} deployment ${LLM_DEPLOYMENT:-?} auth $([ -n "$LLM_API_KEY" ] && echo key || echo managed-identity)"
 
 # ---------------------------------------------------------------- 7 postgres
 STEP=postgres
-PG_PASSWORD=$(kv_get "$PG_PASSWORD_SECRET")
+PG_PASSWORD=$(secret_get "$PG_PASSWORD_SECRET")
 [ -n "$PG_PASSWORD" ] || status_fail "secret $PG_PASSWORD_SECRET is empty" 13
 PG_URL="postgres://$(urlencode "$PG_USER"):$(urlencode "$PG_PASSWORD")@$PG_HOST:5432/$PG_DB?sslmode=require"
 
 # ---------------------------------------------------------------- 8 storage key (cold tier)
 STEP=storage
-STORAGE_KEY=""
-if [ -n "${STORAGE_ACCOUNT:-}" ]; then
-  code=$(curl -sS -m 30 -o /tmp/keys.json -w '%{http_code}' -X POST -H "Authorization: Bearer $ARM_TOKEN" -H 'Content-Length: 0' \
-    "https://management.azure.com/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$STORAGE_RG/providers/Microsoft.Storage/storageAccounts/$STORAGE_ACCOUNT/listKeys?api-version=2023-05-01")
-  [ "$code" = 200 ] || status_fail "listKeys on $STORAGE_ACCOUNT returned HTTP $code (role: Storage Account Key Operator Service Role)" 14
-  STORAGE_KEY=$(python3 -c 'import json; print(json.load(open("/tmp/keys.json"))["keys"][0]["value"])'); rm -f /tmp/keys.json
+if [ "$CLOUD" = aws ]; then
+  STORAGE_KEY=""   # S3 uses the instance role; nothing to fetch
+  [ -n "${S3_BUCKET:-}" ] && echo "cold tier: s3://$S3_BUCKET/$COLD_CONTAINER (instance role)"
+else
+  STORAGE_KEY=""
+  if [ -n "${STORAGE_ACCOUNT:-}" ]; then
+    code=$(curl -sS -m 30 -o /tmp/keys.json -w '%{http_code}' -X POST -H "Authorization: Bearer $ARM_TOKEN" -H 'Content-Length: 0' \
+      "https://management.azure.com/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$STORAGE_RG/providers/Microsoft.Storage/storageAccounts/$STORAGE_ACCOUNT/listKeys?api-version=2023-05-01")
+    [ "$code" = 200 ] || status_fail "listKeys on $STORAGE_ACCOUNT returned HTTP $code (role: Storage Account Key Operator Service Role)" 14
+    STORAGE_KEY=$(python3 -c 'import json; print(json.load(open("/tmp/keys.json"))["keys"][0]["value"])'); rm -f /tmp/keys.json
+  fi
 fi
 
 # ---------------------------------------------------------------- 8b export signing key
@@ -260,14 +294,14 @@ STEP=signing-key
 SIGN_SECRET="${SIGN_SECRET:-grantai-export-signing-key}"
 SIGN_PUB_SECRET="${SIGN_PUB_SECRET:-grantai-export-signing-pub}"
 if [ ! -s "$ROOT/etc/export-signing.key" ]; then
-  EXISTING_KEY=$(kv_get "$SIGN_SECRET" || true)
+  EXISTING_KEY=$(secret_get "$SIGN_SECRET" || true)
   umask 077
   if [ -n "$EXISTING_KEY" ]; then
     printf '%s\n' "$EXISTING_KEY" > "$ROOT/etc/export-signing.key"
   else
     openssl ecparam -name prime256v1 -genkey -noout -out "$ROOT/etc/export-signing.key"
-    kv_put "$SIGN_SECRET" "$(cat "$ROOT/etc/export-signing.key")"
-    kv_put "$SIGN_PUB_SECRET" "$(openssl pkey -in "$ROOT/etc/export-signing.key" -pubout)"
+    secret_put "$SIGN_SECRET" "$(cat "$ROOT/etc/export-signing.key")"
+    secret_put "$SIGN_PUB_SECRET" "$(openssl pkey -in "$ROOT/etc/export-signing.key" -pubout)"
   fi
   umask 022
 fi
@@ -279,7 +313,7 @@ echo "export signing key fingerprint sha256:$SIGN_FP"
 # ---------------------------------------------------------------- 9 TLS
 STEP=tls
 if [ -n "${TLS_CERT_SECRET:-}" ]; then
-  kv_get "$TLS_CERT_SECRET" | base64 -d > /tmp/cert.pfx
+  secret_get "$TLS_CERT_SECRET" | base64 -d > /tmp/cert.pfx
   openssl pkcs12 -in /tmp/cert.pfx -clcerts -nokeys -passin pass: -out "$ROOT/etc/tls.crt"
   openssl pkcs12 -in /tmp/cert.pfx -nocerts -nodes -passin pass: -out "$ROOT/etc/tls.key"
   rm -f /tmp/cert.pfx
@@ -359,6 +393,9 @@ if [ -n "$STORAGE_KEY" ]; then cat >> "$ROOT/etc/grantai.env.new" <<EOF
 GRANTAI_AZURE_STORAGE_ACCOUNT=$STORAGE_ACCOUNT
 GRANTAI_AZURE_STORAGE_KEY=$STORAGE_KEY
 GRANTAI_AZURE_STORAGE_CONTAINER=$COLD_CONTAINER
+GRANTAI_S3_BUCKET=${S3_BUCKET:-}
+GRANTAI_S3_REGION=${AWS_REGION:-}
+GRANTAI_S3_PREFIX=$COLD_CONTAINER
 EOF
 fi
 if [ -n "${AUTH_ISSUER:-}" ]; then cat >> "$ROOT/etc/grantai.env.new" <<EOF
