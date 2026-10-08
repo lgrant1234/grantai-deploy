@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "description": "Reviewer policies. Deterministic rules evaluated by grantai-reviewer.py over sealed records. Each finding is itself sealed under the reviewer's identity, citing the record it judged. Edit, then restart grantai-reviewer; the new policy file is sealed as review/policy/<sha256> before use.",
+  "silent_agent_hours": 24,
+  "rules": [
+    {
+      "id": "approval-without-po",
+      "severity": "high",
+      "title": "Invoice approved over the threshold without a purchase order",
+      "applies_to": {"source_prefix": "foundry/", "agent": "ap-invoice-reviewer"},
+      "when": {
+        "output_text_matches": "\\bapprov(e|ed|al)\\b",
+        "tool_result": {"path": "po", "is_null": true},
+        "tool_result_number": {"path": "amount", "gt": 25000}
+      }
+    },
+    {
+      "id": "p1-security-escalation",
+      "severity": "high",
+      "title": "Agent classified a ticket as P1 Security",
+      "applies_to": {"source_prefix": "foundry/", "agent": "support-triage"},
+      "when": {"output_text_matches": "P1[\\s\\S]{0,80}Security|Security[\\s\\S]{0,80}P1"}
+    },
+    {
+      "id": "high-risk-vendor",
+      "severity": "medium",
+      "title": "Vendor rated High risk",
+      "applies_to": {"source_prefix": "foundry/", "agent": "vendor-risk-analyst"},
+      "when": {"output_text_matches": "Risk Rating:\\**\\s*High"}
+    },
+    {
+      "id": "tool-outside-allowlist",
+      "severity": "high",
+      "title": "Agent called a tool that is not on its allow-list",
+      "applies_to": {"source_prefix": "foundry/"},
+      "when": {"tool_called_not_in": {"ap-invoice-reviewer": ["lookup_invoice", "grantai_infer", "grantai_teach"], "*": ["grantai_infer", "grantai_teach"]}}
+    },
+    {
+      "id": "run-failed",
+      "severity": "low",
+      "title": "Agent turn did not complete",
+      "applies_to": {"source_prefix": "foundry/"},
+      "when": {"field_not_in": {"path": "status", "values": ["completed", null]}}
+    }
+  ]
+}

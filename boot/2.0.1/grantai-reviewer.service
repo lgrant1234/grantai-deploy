@@ -1,0 +1,21 @@
+[Unit]
+Description=GrantAi reviewer (observes the record, seals findings, alerts)
+After=grantai.service network-online.target
+Wants=grantai.service
+
+[Service]
+Type=simple
+User=grantai
+Group=grantai
+EnvironmentFile=/opt/grantai/etc/reviewer.env
+ExecStart=/usr/bin/python3 /opt/grantai/bin/grantai-reviewer.py
+Restart=always
+RestartSec=20
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/grantai/var
+
+[Install]
+WantedBy=multi-user.target

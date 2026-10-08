@@ -1,0 +1,21 @@
+[Unit]
+Description=GrantAi Foundry tap (records what Azure AI Foundry agents did)
+After=grantai.service network-online.target
+Wants=grantai.service
+
+[Service]
+Type=simple
+User=grantai
+Group=grantai
+EnvironmentFile=/opt/grantai/etc/foundry-tap.env
+ExecStart=/usr/bin/python3 /opt/grantai/bin/grantai-foundry-tap.py
+Restart=always
+RestartSec=15
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/grantai/var
+
+[Install]
+WantedBy=multi-user.target

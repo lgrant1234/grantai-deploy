@@ -1,0 +1,784 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.42.1.51946",
+      "templateHash": "12603306604731084046"
+    }
+  },
+  "parameters": {
+    "namePrefix": {
+      "type": "string",
+      "defaultValue": "grantai",
+      "minLength": 3,
+      "maxLength": 12,
+      "metadata": {
+        "description": "Deployment name prefix, lowercase letters and digits (3-12 chars)."
+      }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]"
+    },
+    "osImage": {
+      "type": "string",
+      "defaultValue": "ubuntu-22.04",
+      "allowedValues": [
+        "ubuntu-22.04",
+        "rhel-9"
+      ]
+    },
+    "imageVersionId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Compute Gallery image version resource id (private share). Empty: see communityImageId or packageUrl."
+      }
+    },
+    "communityImageId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Community gallery image id, e.g. /CommunityGalleries/<public name>/Images/grantai-server-ubuntu-22-04/Versions/2.0.1. Used when imageVersionId is empty."
+      }
+    },
+    "packageUrl": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Release package URL (zip) used when imageVersionId is empty. Public-read, or a blob in this subscription the VM identity can read (grant Storage Blob Data Reader on that account separately)."
+      }
+    },
+    "packageSha256": {
+      "type": "string",
+      "defaultValue": ""
+    },
+    "bootFilesBaseUrl": {
+      "type": "string",
+      "metadata": {
+        "description": "Where the first-boot files are published (first-boot.sh, grantai.service, grantai-ctl, grantai-selfcheck.py). Container URL without trailing slash. Public-read, or a blob container in THIS deployment's subscription that the VM identity can read."
+      }
+    },
+    "bootFilesSas": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional SAS query string (without the leading ?) appended to each boot file URL when the container is private."
+      }
+    },
+    "vmSize": {
+      "type": "string",
+      "defaultValue": "Standard_B2ms"
+    },
+    "adminUsername": {
+      "type": "string",
+      "defaultValue": "grantai-admin"
+    },
+    "sshPublicKey": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "SSH public key. Empty disables SSH entirely (no inbound rule, no admin key)."
+      }
+    },
+    "allowedClientCidr": {
+      "type": "string",
+      "metadata": {
+        "description": "CIDR allowed to reach the service port (and SSH when enabled)."
+      }
+    },
+    "enablePublicIp": {
+      "type": "bool",
+      "defaultValue": false
+    },
+    "httpPort": {
+      "type": "int",
+      "defaultValue": 8443
+    },
+    "pgSku": {
+      "type": "string",
+      "defaultValue": "Standard_B1ms"
+    },
+    "pgVersion": {
+      "type": "string",
+      "defaultValue": "16",
+      "allowedValues": [
+        "15",
+        "16"
+      ]
+    },
+    "pgAdminUser": {
+      "type": "string",
+      "defaultValue": "grantaiadmin"
+    },
+    "pgAdminPassword": {
+      "type": "securestring",
+      "defaultValue": "[newGuid()]",
+      "metadata": {
+        "description": "Postgres admin password; generated when not supplied (stored as a Key Vault secret)."
+      }
+    },
+    "pgBackupRetentionDays": {
+      "type": "int",
+      "defaultValue": 7,
+      "minValue": 7,
+      "maxValue": 35
+    },
+    "pgGeoRedundantBackup": {
+      "type": "bool",
+      "defaultValue": false
+    },
+    "pgStorageGb": {
+      "type": "int",
+      "defaultValue": 32
+    },
+    "storageSku": {
+      "type": "string",
+      "defaultValue": "Standard_ZRS",
+      "allowedValues": [
+        "Standard_ZRS",
+        "Standard_LRS",
+        "Standard_GRS"
+      ]
+    },
+    "coldContainer": {
+      "type": "string",
+      "defaultValue": "audit-cold"
+    },
+    "coldRetentionDays": {
+      "type": "int",
+      "defaultValue": 2557,
+      "metadata": {
+        "description": "Immutability (WORM) retention for the cold container, in days. 2557 = 7 years."
+      }
+    },
+    "licenseKey": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Licence key from solonai.com. Leave empty to start a 30-day trial with trialEmail, or to use licenseJwtSecretName."
+      }
+    },
+    "trialEmail": {
+      "type": "string",
+      "defaultValue": ""
+    },
+    "licenseJwtSecretName": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Key Vault secret (in this deployment's vault) holding a licence JWT for tenants that cannot reach solonai.com. Create the vault first or let first boot read it after you add the secret."
+      }
+    },
+    "licenseJwt": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "A licence JWT handed over as a file, for tenants that cannot reach solonai.com. Stored in this deployment's Key Vault as licenseJwtSecretName and read at first boot."
+      }
+    },
+    "licenseDevPubkeyPem": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Development only: PEM public key accepted under kid \"dev\". Never set for a customer."
+      }
+    },
+    "tlsCertSecretName": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional Key Vault secret holding a PFX (base64) for TLS. Empty: self-signed."
+      }
+    },
+    "authIssuer": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional per-caller identity: OAuth issuer and audience the server validates bearer tokens against."
+      }
+    },
+    "authAudience": {
+      "type": "string",
+      "defaultValue": ""
+    },
+    "foundryProjectEndpoint": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional Azure AI Foundry project endpoint (https://<account>.services.ai.azure.com/api/projects/<project>). When set, the collector runs the Foundry tap: it reads the project with the VM identity (grant it the Foundry User role on the project) and seals every agent message, run and tool call. No agent configuration needed."
+      }
+    },
+    "agentSourcePrefix": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional NSG source for platform-hosted agents that call the collector as an MCP tool, e.g. the service tag AzureCloud.CentralUS or a CIDR. Empty: only allowedClientCidr may reach the service port. Bearer auth still applies."
+      }
+    },
+    "acmeEmail": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional: obtain a publicly trusted TLS certificate for the public FQDN from Let's Encrypt (ACME HTTP-01) at first boot and renew it automatically. Needs enablePublicIp and admits port 80 from the internet for the challenge. Platform-hosted agents (Foundry) require a trusted certificate to call the collector as a tool."
+      }
+    },
+    "reviewWebhookUrl": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional webhook (Teams, Slack, SIEM) that receives each reviewer finding as JSON."
+      }
+    },
+    "tags": {
+      "type": "object",
+      "defaultValue": {
+        "product": "grantai-system-of-record"
+      }
+    },
+    "operatorObjectId": {
+      "type": "string",
+      "defaultValue": "[deployer().objectId]",
+      "metadata": {
+        "description": "Object id of the operator (user or group) who reads the bootstrap token and licence from Key Vault. Defaults to whoever runs the deployment. Empty: no operator access is granted (assign a role later)."
+      }
+    },
+    "operatorPrincipalType": {
+      "type": "string",
+      "defaultValue": "User",
+      "allowedValues": [
+        "User",
+        "Group",
+        "ServicePrincipal"
+      ],
+      "metadata": {
+        "description": "Principal type of operatorObjectId: User, Group or ServicePrincipal."
+      }
+    }
+  },
+  "variables": {
+    "suffix": "[toLower(uniqueString(resourceGroup().id, parameters('namePrefix')))]",
+    "vmName": "[format('{0}-vm', parameters('namePrefix'))]",
+    "kvName": "[take(format('{0}-kv-{1}', parameters('namePrefix'), variables('suffix')), 24)]",
+    "saName": "[take(replace(format('{0}sa{1}', parameters('namePrefix'), variables('suffix')), '-', ''), 24)]",
+    "pgName": "[format('{0}-pg-{1}', parameters('namePrefix'), variables('suffix'))]",
+    "vnetName": "[format('{0}-vnet', parameters('namePrefix'))]",
+    "dnsZoneName": "[format('{0}.private.postgres.database.azure.com', variables('pgName'))]",
+    "sshEnabled": "[not(empty(parameters('sshPublicKey')))]",
+    "images": {
+      "ubuntu-22.04": {
+        "publisher": "Canonical",
+        "offer": "0001-com-ubuntu-server-jammy",
+        "sku": "22_04-lts-gen2",
+        "version": "latest"
+      },
+      "rhel-9": {
+        "publisher": "RedHat",
+        "offer": "RHEL",
+        "sku": "9-lvm-gen2",
+        "version": "latest"
+      }
+    },
+    "roleKvSecretsOfficer": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7')]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Network/networkSecurityGroups",
+      "apiVersion": "2023-11-01",
+      "name": "[format('{0}-nsg', parameters('namePrefix'))]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "properties": {
+        "securityRules": "[concat(createArray(createObject('name', 'allow-service-port', 'properties', createObject('priority', 1000, 'direction', 'Inbound', 'access', 'Allow', 'protocol', 'Tcp', 'sourceAddressPrefix', parameters('allowedClientCidr'), 'sourcePortRange', '*', 'destinationAddressPrefix', '*', 'destinationPortRange', string(parameters('httpPort')))), createObject('name', 'deny-other-inbound', 'properties', createObject('priority', 4000, 'direction', 'Inbound', 'access', 'Deny', 'protocol', '*', 'sourceAddressPrefix', '*', 'sourcePortRange', '*', 'destinationAddressPrefix', '*', 'destinationPortRange', '*'))), if(empty(parameters('acmeEmail')), createArray(), createArray(createObject('name', 'allow-acme-http-challenge', 'properties', createObject('priority', 1030, 'direction', 'Inbound', 'access', 'Allow', 'protocol', 'Tcp', 'sourceAddressPrefix', 'Internet', 'sourcePortRange', '*', 'destinationAddressPrefix', '*', 'destinationPortRange', '80')))), if(empty(parameters('agentSourcePrefix')), createArray(), createArray(createObject('name', 'allow-agent-source-service-port', 'properties', createObject('priority', 1020, 'direction', 'Inbound', 'access', 'Allow', 'protocol', 'Tcp', 'sourceAddressPrefix', parameters('agentSourcePrefix'), 'sourcePortRange', '*', 'destinationAddressPrefix', '*', 'destinationPortRange', string(parameters('httpPort')))))), if(variables('sshEnabled'), createArray(createObject('name', 'allow-ssh', 'properties', createObject('priority', 1010, 'direction', 'Inbound', 'access', 'Allow', 'protocol', 'Tcp', 'sourceAddressPrefix', parameters('allowedClientCidr'), 'sourcePortRange', '*', 'destinationAddressPrefix', '*', 'destinationPortRange', '22'))), createArray()))]"
+      }
+    },
+    {
+      "type": "Microsoft.Network/virtualNetworks",
+      "apiVersion": "2023-11-01",
+      "name": "[variables('vnetName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "properties": {
+        "addressSpace": {
+          "addressPrefixes": [
+            "10.60.0.0/16"
+          ]
+        },
+        "subnets": [
+          {
+            "name": "snet-app",
+            "properties": {
+              "addressPrefix": "10.60.1.0/24",
+              "networkSecurityGroup": {
+                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', format('{0}-nsg', parameters('namePrefix')))]"
+              },
+              "serviceEndpoints": [
+                {
+                  "service": "Microsoft.KeyVault"
+                },
+                {
+                  "service": "Microsoft.Storage"
+                }
+              ]
+            }
+          },
+          {
+            "name": "snet-pg",
+            "properties": {
+              "addressPrefix": "10.60.2.0/24",
+              "delegations": [
+                {
+                  "name": "pg",
+                  "properties": {
+                    "serviceName": "Microsoft.DBforPostgreSQL/flexibleServers"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkSecurityGroups', format('{0}-nsg', parameters('namePrefix')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones",
+      "apiVersion": "2020-06-01",
+      "name": "[variables('dnsZoneName')]",
+      "location": "global",
+      "tags": "[parameters('tags')]"
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+      "apiVersion": "2020-06-01",
+      "name": "[format('{0}/{1}', variables('dnsZoneName'), format('{0}-link', variables('vnetName')))]",
+      "location": "global",
+      "properties": {
+        "virtualNetwork": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+        },
+        "registrationEnabled": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones', variables('dnsZoneName'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "condition": "[parameters('enablePublicIp')]",
+      "type": "Microsoft.Network/publicIPAddresses",
+      "apiVersion": "2023-11-01",
+      "name": "[format('{0}-pip', parameters('namePrefix'))]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "sku": {
+        "name": "Standard"
+      },
+      "properties": {
+        "publicIPAllocationMethod": "Static",
+        "dnsSettings": {
+          "domainNameLabel": "[format('{0}-{1}', parameters('namePrefix'), variables('suffix'))]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Network/networkInterfaces",
+      "apiVersion": "2023-11-01",
+      "name": "[format('{0}-nic', variables('vmName'))]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "ipconfig1",
+            "properties": "[union(createObject('subnet', createObject('id', resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), 'snet-app')), 'privateIPAllocationMethod', 'Dynamic'), if(parameters('enablePublicIp'), createObject('publicIPAddress', createObject('id', resourceId('Microsoft.Network/publicIPAddresses', format('{0}-pip', parameters('namePrefix'))))), createObject()))]"
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/publicIPAddresses', format('{0}-pip', parameters('namePrefix')))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.KeyVault/vaults",
+      "apiVersion": "2023-07-01",
+      "name": "[variables('kvName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "properties": {
+        "tenantId": "[subscription().tenantId]",
+        "sku": {
+          "family": "A",
+          "name": "standard"
+        },
+        "enableRbacAuthorization": true,
+        "enableSoftDelete": true,
+        "enablePurgeProtection": true,
+        "publicNetworkAccess": "Enabled",
+        "networkAcls": {
+          "defaultAction": "Allow",
+          "bypass": "AzureServices"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.KeyVault/vaults/secrets",
+      "apiVersion": "2023-07-01",
+      "name": "[format('{0}/{1}', variables('kvName'), 'grantai-pg-password')]",
+      "properties": {
+        "value": "[parameters('pgAdminPassword')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.KeyVault/vaults', variables('kvName'))]"
+      ]
+    },
+    {
+      "condition": "[and(not(empty(parameters('licenseJwt'))), not(empty(parameters('licenseJwtSecretName'))))]",
+      "type": "Microsoft.KeyVault/vaults/secrets",
+      "apiVersion": "2023-07-01",
+      "name": "[format('{0}/{1}', variables('kvName'), if(empty(parameters('licenseJwtSecretName')), 'grantai-license-jwt', parameters('licenseJwtSecretName')))]",
+      "properties": {
+        "value": "[parameters('licenseJwt')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.KeyVault/vaults', variables('kvName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-05-01",
+      "name": "[variables('saName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "kind": "StorageV2",
+      "sku": {
+        "name": "[parameters('storageSku')]"
+      },
+      "properties": {
+        "minimumTlsVersion": "TLS1_2",
+        "supportsHttpsTrafficOnly": true,
+        "allowBlobPublicAccess": false,
+        "allowSharedKeyAccess": true,
+        "accessTier": "Cool"
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}', variables('saName'), 'default')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('saName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}/{2}', variables('saName'), 'default', parameters('coldContainer'))]",
+      "properties": {
+        "publicAccess": "None"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices', variables('saName'), 'default')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers/immutabilityPolicies",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}/{2}/{3}', variables('saName'), 'default', parameters('coldContainer'), 'default')]",
+      "properties": {
+        "immutabilityPeriodSinceCreationInDays": "[parameters('coldRetentionDays')]",
+        "allowProtectedAppendWrites": true
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('saName'), 'default', parameters('coldContainer'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.DBforPostgreSQL/flexibleServers",
+      "apiVersion": "2023-12-01-preview",
+      "name": "[variables('pgName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "sku": {
+        "name": "[parameters('pgSku')]",
+        "tier": "Burstable"
+      },
+      "properties": {
+        "version": "[parameters('pgVersion')]",
+        "administratorLogin": "[parameters('pgAdminUser')]",
+        "administratorLoginPassword": "[parameters('pgAdminPassword')]",
+        "storage": {
+          "storageSizeGB": "[parameters('pgStorageGb')]",
+          "autoGrow": "Enabled"
+        },
+        "backup": {
+          "backupRetentionDays": "[parameters('pgBackupRetentionDays')]",
+          "geoRedundantBackup": "[if(parameters('pgGeoRedundantBackup'), 'Enabled', 'Disabled')]"
+        },
+        "highAvailability": {
+          "mode": "Disabled"
+        },
+        "network": {
+          "delegatedSubnetResourceId": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), 'snet-pg')]",
+          "privateDnsZoneArmResourceId": "[resourceId('Microsoft.Network/privateDnsZones', variables('dnsZoneName'))]"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones/virtualNetworkLinks', variables('dnsZoneName'), format('{0}-link', variables('vnetName')))]",
+        "[resourceId('Microsoft.Network/privateDnsZones', variables('dnsZoneName'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.DBforPostgreSQL/flexibleServers/databases",
+      "apiVersion": "2023-12-01-preview",
+      "name": "[format('{0}/{1}', variables('pgName'), 'grantai')]",
+      "properties": {
+        "charset": "UTF8",
+        "collation": "en_US.utf8"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers', variables('pgName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines",
+      "apiVersion": "2024-03-01",
+      "name": "[variables('vmName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "hardwareProfile": {
+          "vmSize": "[parameters('vmSize')]"
+        },
+        "storageProfile": {
+          "imageReference": "[if(not(empty(parameters('imageVersionId'))), createObject('id', parameters('imageVersionId')), if(not(empty(parameters('communityImageId'))), createObject('communityGalleryImageId', parameters('communityImageId')), variables('images')[parameters('osImage')]))]",
+          "osDisk": {
+            "name": "[format('{0}-osdisk', variables('vmName'))]",
+            "createOption": "FromImage",
+            "diskSizeGB": 64,
+            "managedDisk": {
+              "storageAccountType": "Premium_LRS"
+            }
+          }
+        },
+        "osProfile": {
+          "computerName": "[variables('vmName')]",
+          "adminUsername": "[parameters('adminUsername')]",
+          "adminPassword": "[if(variables('sshEnabled'), null(), parameters('pgAdminPassword'))]",
+          "linuxConfiguration": "[if(variables('sshEnabled'), createObject('disablePasswordAuthentication', true(), 'ssh', createObject('publicKeys', createArray(createObject('path', format('/home/{0}/.ssh/authorized_keys', parameters('adminUsername')), 'keyData', parameters('sshPublicKey'))))), createObject('disablePasswordAuthentication', false()))]"
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            {
+              "id": "[resourceId('Microsoft.Network/networkInterfaces', format('{0}-nic', variables('vmName')))]"
+            }
+          ]
+        },
+        "securityProfile": {
+          "securityType": "TrustedLaunch",
+          "uefiSettings": {
+            "secureBootEnabled": true,
+            "vTpmEnabled": true
+          }
+        },
+        "diagnosticsProfile": {
+          "bootDiagnostics": {
+            "enabled": true
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkInterfaces', format('{0}-nic', variables('vmName')))]"
+      ]
+    },
+    {
+      "condition": "[not(empty(parameters('operatorObjectId')))]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.KeyVault/vaults', variables('kvName'))]",
+      "name": "[guid(resourceId('Microsoft.KeyVault/vaults', variables('kvName')), parameters('operatorObjectId'), 'kv-secrets-officer')]",
+      "properties": {
+        "roleDefinitionId": "[variables('roleKvSecretsOfficer')]",
+        "principalId": "[parameters('operatorObjectId')]",
+        "principalType": "[parameters('operatorPrincipalType')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.KeyVault/vaults', variables('kvName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines/extensions",
+      "apiVersion": "2024-03-01",
+      "name": "[format('{0}/{1}', variables('vmName'), 'grantai-first-boot')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "publisher": "Microsoft.Azure.Extensions",
+        "type": "CustomScript",
+        "typeHandlerVersion": "2.1",
+        "autoUpgradeMinorVersion": true,
+        "protectedSettings": {
+          "managedIdentity": {},
+          "fileUris": [
+            "[format('{0}/first-boot.sh{1}', parameters('bootFilesBaseUrl'), if(empty(parameters('bootFilesSas')), '', format('?{0}', parameters('bootFilesSas'))))]",
+            "[format('{0}/grantai.service{1}', parameters('bootFilesBaseUrl'), if(empty(parameters('bootFilesSas')), '', format('?{0}', parameters('bootFilesSas'))))]",
+            "[format('{0}/grantai-ctl{1}', parameters('bootFilesBaseUrl'), if(empty(parameters('bootFilesSas')), '', format('?{0}', parameters('bootFilesSas'))))]",
+            "[format('{0}/grantai-selfcheck.py{1}', parameters('bootFilesBaseUrl'), if(empty(parameters('bootFilesSas')), '', format('?{0}', parameters('bootFilesSas'))))]",
+            "[format('{0}/grantai-foundry-tap.py{1}', parameters('bootFilesBaseUrl'), if(empty(parameters('bootFilesSas')), '', format('?{0}', parameters('bootFilesSas'))))]",
+            "[format('{0}/grantai-foundry-tap.service{1}', parameters('bootFilesBaseUrl'), if(empty(parameters('bootFilesSas')), '', format('?{0}', parameters('bootFilesSas'))))]",
+            "[format('{0}/grantai-reviewer.py{1}', parameters('bootFilesBaseUrl'), if(empty(parameters('bootFilesSas')), '', format('?{0}', parameters('bootFilesSas'))))]",
+            "[format('{0}/grantai-reviewer.service{1}', parameters('bootFilesBaseUrl'), if(empty(parameters('bootFilesSas')), '', format('?{0}', parameters('bootFilesSas'))))]",
+            "[format('{0}/review-policies.json{1}', parameters('bootFilesBaseUrl'), if(empty(parameters('bootFilesSas')), '', format('?{0}', parameters('bootFilesSas'))))]"
+          ],
+          "commandToExecute": "[format('mkdir -p /etc/grantai && echo {0} | base64 -d > /etc/grantai/firstboot.env && chmod 600 /etc/grantai/firstboot.env && bash ./first-boot.sh /etc/grantai/firstboot.env', base64(join(createArray(format('KEYVAULT_NAME={0}', variables('kvName')), format('PG_HOST={0}', reference(resourceId('Microsoft.DBforPostgreSQL/flexibleServers', variables('pgName')), '2023-12-01-preview').fullyQualifiedDomainName), 'PG_DB=grantai', format('PG_USER={0}', parameters('pgAdminUser')), 'PG_PASSWORD_SECRET=grantai-pg-password', format('STORAGE_ACCOUNT={0}', variables('saName')), format('STORAGE_RG={0}', resourceGroup().name), format('COLD_CONTAINER={0}', parameters('coldContainer')), format('SUBSCRIPTION_ID={0}', subscription().subscriptionId), format('HTTP_PORT={0}', parameters('httpPort')), format('LICENSE_KEY={0}', parameters('licenseKey')), format('TRIAL_EMAIL={0}', parameters('trialEmail')), format('LICENSE_JWT_SECRET={0}', parameters('licenseJwtSecretName')), format('LICENSE_DEV_PUBKEY_PEM={0}', replace(parameters('licenseDevPubkeyPem'), '\n', '\\n')), format('TLS_CERT_SECRET={0}', parameters('tlsCertSecretName')), format('PUBLIC_FQDN={0}', if(parameters('enablePublicIp'), reference(resourceId('Microsoft.Network/publicIPAddresses', format('{0}-pip', parameters('namePrefix'))), '2023-11-01').dnsSettings.fqdn, '')), format('PACKAGE_URL={0}', parameters('packageUrl')), format('PACKAGE_SHA256={0}', parameters('packageSha256')), format('AUTH_ISSUER={0}', parameters('authIssuer')), format('AUTH_AUDIENCE={0}', parameters('authAudience')), format('FOUNDRY_PROJECT_ENDPOINT={0}', parameters('foundryProjectEndpoint')), format('REVIEW_WEBHOOK_URL={0}', parameters('reviewWebhookUrl')), format('ACME_EMAIL={0}', parameters('acmeEmail'))), '\n')))]"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers/immutabilityPolicies', variables('saName'), 'default', parameters('coldContainer'), 'default')]",
+        "[resourceId('Microsoft.KeyVault/vaults', variables('kvName'))]",
+        "[resourceId('Microsoft.KeyVault/vaults/secrets', variables('kvName'), if(empty(parameters('licenseJwtSecretName')), 'grantai-license-jwt', parameters('licenseJwtSecretName')))]",
+        "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers', variables('pgName'))]",
+        "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers/databases', variables('pgName'), 'grantai')]",
+        "[resourceId('Microsoft.KeyVault/vaults/secrets', variables('kvName'), 'grantai-pg-password')]",
+        "[resourceId('Microsoft.Network/publicIPAddresses', format('{0}-pip', parameters('namePrefix')))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('saName'))]",
+        "[resourceId('Microsoft.Compute/virtualMachines', variables('vmName'))]",
+        "[resourceId('Microsoft.Resources/deployments', 'vm-roles')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "vm-roles",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "principalId": {
+            "value": "[reference(resourceId('Microsoft.Compute/virtualMachines', variables('vmName')), '2024-03-01', 'full').identity.principalId]"
+          },
+          "keyVaultName": {
+            "value": "[variables('kvName')]"
+          },
+          "storageAccountName": {
+            "value": "[variables('saName')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.42.1.51946",
+              "templateHash": "1009703819000960494"
+            }
+          },
+          "parameters": {
+            "principalId": {
+              "type": "string"
+            },
+            "keyVaultName": {
+              "type": "string"
+            },
+            "storageAccountName": {
+              "type": "string"
+            }
+          },
+          "variables": {
+            "roleKvSecretsOfficer": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7')]",
+            "roleStorageKeyOperator": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '81a9662b-bebf-436f-a333-f67b29880f12')]",
+            "roleBlobDataReader": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1')]"
+          },
+          "resources": [
+            {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "scope": "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
+              "name": "[guid(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), parameters('principalId'), 'kv-secrets-officer')]",
+              "properties": {
+                "roleDefinitionId": "[variables('roleKvSecretsOfficer')]",
+                "principalId": "[parameters('principalId')]",
+                "principalType": "ServicePrincipal"
+              }
+            },
+            {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "scope": "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]",
+              "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), parameters('principalId'), 'sa-key-operator')]",
+              "properties": {
+                "roleDefinitionId": "[variables('roleStorageKeyOperator')]",
+                "principalId": "[parameters('principalId')]",
+                "principalType": "ServicePrincipal"
+              }
+            },
+            {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "scope": "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]",
+              "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), parameters('principalId'), 'sa-blob-reader')]",
+              "properties": {
+                "roleDefinitionId": "[variables('roleBlobDataReader')]",
+                "principalId": "[parameters('principalId')]",
+                "principalType": "ServicePrincipal"
+              }
+            }
+          ]
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.KeyVault/vaults', variables('kvName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('saName'))]",
+        "[resourceId('Microsoft.Compute/virtualMachines', variables('vmName'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "vmPrivateIp": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Network/networkInterfaces', format('{0}-nic', variables('vmName'))), '2023-11-01').ipConfigurations[0].properties.privateIPAddress]"
+    },
+    "publicFqdn": {
+      "type": "string",
+      "value": "[if(parameters('enablePublicIp'), reference(resourceId('Microsoft.Network/publicIPAddresses', format('{0}-pip', parameters('namePrefix'))), '2023-11-01').dnsSettings.fqdn, '')]"
+    },
+    "keyVaultName": {
+      "type": "string",
+      "value": "[variables('kvName')]"
+    },
+    "postgresHost": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.DBforPostgreSQL/flexibleServers', variables('pgName')), '2023-12-01-preview').fullyQualifiedDomainName]"
+    },
+    "storageAccount": {
+      "type": "string",
+      "value": "[variables('saName')]"
+    },
+    "healthUrl": {
+      "type": "string",
+      "value": "[format('https://{0}:{1}/health', if(parameters('enablePublicIp'), reference(resourceId('Microsoft.Network/publicIPAddresses', format('{0}-pip', parameters('namePrefix'))), '2023-11-01').dnsSettings.fqdn, reference(resourceId('Microsoft.Network/networkInterfaces', format('{0}-nic', variables('vmName'))), '2023-11-01').ipConfigurations[0].properties.privateIPAddress), parameters('httpPort'))]"
+    },
+    "nextSteps": {
+      "type": "string",
+      "value": "[format('Console: https://{0}:{1}/audit . Sign in with the token in Key Vault {2}, secret grantai-http-token (az keyvault secret show --vault-name {3} -n grantai-http-token --query value -o tsv). First-boot result: /opt/grantai/var/firstboot-status.json on the VM. To capture Azure AI Foundry agents: grant this VM''s identity the Foundry User role on your project and redeploy with foundryProjectEndpoint set.', if(parameters('enablePublicIp'), reference(resourceId('Microsoft.Network/publicIPAddresses', format('{0}-pip', parameters('namePrefix'))), '2023-11-01').dnsSettings.fqdn, reference(resourceId('Microsoft.Network/networkInterfaces', format('{0}-nic', variables('vmName'))), '2023-11-01').ipConfigurations[0].properties.privateIPAddress), parameters('httpPort'), variables('kvName'), variables('kvName'))]"
+    },
+    "statusFile": {
+      "type": "string",
+      "value": "/opt/grantai/var/firstboot-status.json"
+    },
+    "tokenSecret": {
+      "type": "string",
+      "value": "grantai-http-token"
+    }
+  }
+}

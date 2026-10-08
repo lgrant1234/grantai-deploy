@@ -1,0 +1,228 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/0.1.2-preview/CreateUIDefinition.MultiVm.json#",
+  "handler": "Microsoft.Azure.CreateUIDef",
+  "version": "0.1.2-preview",
+  "parameters": {
+    "basics": [
+      {
+        "name": "intro",
+        "type": "Microsoft.Common.TextBlock",
+        "visible": true,
+        "options": {
+          "text": "GrantAi system of record for AI agents. This deploys a collector into this resource group: a VM, a private Postgres server, a Key Vault, immutable cold storage and the first-boot self-check. About 25 minutes. Nothing leaves your tenant except the licence check.",
+          "link": {
+            "label": "What gets deployed",
+            "uri": "https://github.com/lgrant1234/grantai-deploy#what-gets-deployed"
+          }
+        }
+      },
+      {
+        "name": "osImage",
+        "type": "Microsoft.Common.DropDown",
+        "label": "Operating system",
+        "defaultValue": "Ubuntu 22.04 LTS",
+        "toolTip": "Both images are built from the same release.",
+        "constraints": {
+          "allowedValues": [
+            {
+              "label": "Ubuntu 22.04 LTS",
+              "value": "ubuntu-22.04"
+            },
+            {
+              "label": "Red Hat Enterprise Linux 9",
+              "value": "rhel-9"
+            }
+          ],
+          "required": true
+        },
+        "visible": true
+      }
+    ],
+    "steps": [
+      {
+        "name": "licence",
+        "label": "Licence",
+        "elements": [
+          {
+            "name": "mode",
+            "type": "Microsoft.Common.OptionsGroup",
+            "label": "How will this collector be licensed?",
+            "defaultValue": "30-day trial",
+            "toolTip": "",
+            "constraints": {
+              "allowedValues": [
+                {
+                  "label": "30-day trial",
+                  "value": "trial"
+                },
+                {
+                  "label": "Licence file (JWT) I was given",
+                  "value": "jwt"
+                },
+                {
+                  "label": "Licence key",
+                  "value": "key"
+                }
+              ],
+              "required": true
+            },
+            "visible": true
+          },
+          {
+            "name": "trialEmail",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Work email for the trial",
+            "toolTip": "The trial licence is issued to this address. Enterprise tier for 30 days, then reads continue and writes stop until a licence key is loaded.",
+            "constraints": {
+              "required": true,
+              "regex": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$",
+              "validationMessage": "Enter an email address."
+            },
+            "visible": "[equals(steps('licence').mode,'trial')]"
+          },
+          {
+            "name": "licenseJwt",
+            "type": "Microsoft.Common.PasswordBox",
+            "label": {
+              "password": "Licence file contents",
+              "confirmPassword": "Confirm"
+            },
+            "toolTip": "Paste the signed licence (one line). It is stored in the deployment's Key Vault.",
+            "constraints": {
+              "required": true
+            },
+            "options": {
+              "hideConfirmation": true
+            },
+            "visible": "[equals(steps('licence').mode,'jwt')]"
+          },
+          {
+            "name": "licenseKey",
+            "type": "Microsoft.Common.PasswordBox",
+            "label": {
+              "password": "Licence key",
+              "confirmPassword": "Confirm"
+            },
+            "toolTip": "GRANTAI-XXXX-XXXX-XXXX-XXXX. First boot activates it online.",
+            "constraints": {
+              "required": true,
+              "regex": "^GRANTAI-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$",
+              "validationMessage": "Format: GRANTAI-XXXX-XXXX-XXXX-XXXX"
+            },
+            "options": {
+              "hideConfirmation": true
+            },
+            "visible": "[equals(steps('licence').mode,'key')]"
+          }
+        ]
+      },
+      {
+        "name": "network",
+        "label": "Network",
+        "elements": [
+          {
+            "name": "enablePublicIp",
+            "type": "Microsoft.Common.CheckBox",
+            "label": "Give the collector a public address (needed for a trial from outside your network and for Azure AI Foundry agents)",
+            "defaultValue": true,
+            "visible": true
+          },
+          {
+            "name": "allowedClientCidr",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Client address range admitted on the service port",
+            "defaultValue": "",
+            "toolTip": "Your office or VPN egress range in CIDR form, e.g. 203.0.113.0/24. Only these addresses can reach the console and the API; bearer authentication applies as well.",
+            "constraints": {
+              "required": true,
+              "regex": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$",
+              "validationMessage": "CIDR, e.g. 203.0.113.0/24"
+            },
+            "visible": true
+          },
+          {
+            "name": "acmeEmail",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Email for a Let's Encrypt certificate (leave empty for a self-signed one)",
+            "defaultValue": "",
+            "toolTip": "With a public address, first boot obtains a trusted certificate for the collector's name so browsers and platform agents accept it. Port 80 is admitted from the internet for the challenge.",
+            "constraints": {
+              "required": false,
+              "regex": "^$|^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$",
+              "validationMessage": "Enter an email address or leave empty."
+            },
+            "visible": "[steps('network').enablePublicIp]"
+          },
+          {
+            "name": "sshPublicKey",
+            "type": "Microsoft.Common.TextBox",
+            "label": "SSH public key (optional; empty disables SSH)",
+            "defaultValue": "",
+            "toolTip": "ssh-ed25519 or ssh-rsa public key for the admin user. SSH is admitted only from the client range above.",
+            "constraints": {
+              "required": false
+            },
+            "visible": true
+          }
+        ]
+      },
+      {
+        "name": "agents",
+        "label": "Agents",
+        "elements": [
+          {
+            "name": "foundryProjectEndpoint",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Azure AI Foundry project endpoint (optional)",
+            "defaultValue": "",
+            "toolTip": "https://<account>.services.ai.azure.com/api/projects/<project>. The collector records every agent turn in that project. After deployment, grant the collector VM's identity the Foundry User role on the project.",
+            "constraints": {
+              "required": false,
+              "regex": "^$|^https://[^\\s]+/api/projects/[^\\s/]+$",
+              "validationMessage": "Project endpoint URL, or empty."
+            },
+            "visible": true
+          },
+          {
+            "name": "agentSourcePrefix",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Let platform agents reach the collector from (service tag or CIDR, optional)",
+            "defaultValue": "",
+            "toolTip": "For agents that use the record as a tool, e.g. AzureCloud.CentralUS for Foundry agents in Central US.",
+            "constraints": {
+              "required": false
+            },
+            "visible": true
+          },
+          {
+            "name": "reviewWebhookUrl",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Webhook for reviewer findings (optional)",
+            "defaultValue": "",
+            "toolTip": "Teams, Slack or SIEM endpoint that receives each finding as JSON.",
+            "constraints": {
+              "required": false
+            },
+            "visible": true
+          }
+        ]
+      }
+    ],
+    "outputs": {
+      "location": "[location()]",
+      "osImage": "[basics('osImage')]",
+      "communityImageId": "[concat('/CommunityGalleries/grantai-655c6c15-1c00-4d85-aa47-d8e1b0ed5e38/Images/', if(equals(basics('osImage'),'rhel-9'),'grantai-collector-rhel9','grantai-collector-u2204'), '/Versions/2.0.1')]",
+      "bootFilesBaseUrl": "https://raw.githubusercontent.com/lgrant1234/grantai-deploy/main/boot/2.0.1",
+      "trialEmail": "[if(equals(steps('licence').mode,'trial'), steps('licence').trialEmail, '')]",
+      "licenseJwt": "[if(equals(steps('licence').mode,'jwt'), steps('licence').licenseJwt, '')]",
+      "licenseKey": "[if(equals(steps('licence').mode,'key'), steps('licence').licenseKey, '')]",
+      "enablePublicIp": "[steps('network').enablePublicIp]",
+      "allowedClientCidr": "[steps('network').allowedClientCidr]",
+      "acmeEmail": "[if(steps('network').enablePublicIp, steps('network').acmeEmail, '')]",
+      "sshPublicKey": "[steps('network').sshPublicKey]",
+      "foundryProjectEndpoint": "[steps('agents').foundryProjectEndpoint]",
+      "agentSourcePrefix": "[steps('agents').agentSourcePrefix]",
+      "reviewWebhookUrl": "[steps('agents').reviewWebhookUrl]"
+    }
+  }
+}

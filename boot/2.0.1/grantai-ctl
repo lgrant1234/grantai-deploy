@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# grantai-ctl: operator commands for a deployed GrantAi server.
+#   status           service state, health, licence
+#   selfcheck        run the self-check against the local service
+#   reload-licence   [--key <licence key>] re-activate (renewal or trial-to-paid), verify, restart
+#   rotate-token     new bootstrap token into Key Vault and the environment file, restart
+#   support-bundle   journal, status, health and versions as a tarball (no secrets)
+set -euo pipefail
+ROOT=/opt/grantai
+ENVF=$ROOT/etc/grantai.env
+PARAMS=/etc/grantai/firstboot.env
+
+need_root() { [ "$(id -u)" = 0 ] || { echo "run as root"; exit 1; }; }
+envval() { grep -E "^$1=" "$ENVF" 2>/dev/null | cut -d= -f2- ; }
+port() { envval GRANTAI_HTTP_PORT; }
+token() { envval GRANTAI_HTTP_TOKEN; }
+
+case "${1:-status}" in
+  status)
+    need_root
+    echo "service: $(systemctl is-active grantai) ($(systemctl is-enabled grantai))"
+    echo "version: $(LD_LIBRARY_PATH=$ROOT/current/lib $ROOT/current/bin/grantai-mcp --version)"
+    [ -r "$ROOT/etc/export-signing.key" ] && echo "export signing key: sha256:$(openssl pkey -in "$ROOT/etc/export-signing.key" -pubout -outform DER 2>/dev/null | sha256sum | cut -c1-64)  (public key: $ROOT/var/export-signing.pub, Key Vault secret grantai-export-signing-pub)"
+    [ -r "$ROOT/etc/tls.crt" ] && echo "tls: $(openssl x509 -in "$ROOT/etc/tls.crt" -noout -fingerprint -sha256 | cut -d= -f2) (expires $(openssl x509 -in "$ROOT/etc/tls.crt" -noout -enddate | cut -d= -f2))"
+    curl -sk -m 10 -H "Authorization: Bearer $(token)" "https://127.0.0.1:$(port)/health" | python3 -m json.tool || echo "health: not reachable"
+    ;;
+  selfcheck)
+    need_root
+    cold=(); grep -q ^GRANTAI_AZURE_STORAGE_KEY= "$ENVF" && cold=(--cold)
+    # shellcheck disable=SC1091
+    LOCAL_BASE="https://127.0.0.1:$(port)"; LOCAL_CACERT="$ROOT/etc/tls.crt"; [ -r "$ROOT/etc/local-tls.env" ] && . "$ROOT/etc/local-tls.env"
+    ca=(); [ -n "$LOCAL_CACERT" ] && ca=(--cacert "$LOCAL_CACERT")
+    python3 "$ROOT/bin/grantai-selfcheck.py" --base "$LOCAL_BASE" --token-file "$ENVF" \
+      "${ca[@]}" --install-id "$(envval GRANTAI_INSTALL_ID)" "${cold[@]}" --json "$ROOT/var/selfcheck.json"
+    ;;
+  reload-licence)
+    need_root; shift
+    key=""; while [ $# -gt 0 ]; do case "$1" in --key) key="$2"; shift 2;; *) shift;; esac; done
+    export GRANTAI_HOME=$ROOT/home GRANTAI_API_URL="${GRANTAI_API_URL:-$(grep -E '^API_URL=' "$PARAMS" 2>/dev/null | cut -d= -f2-)}"
+    [ -n "$GRANTAI_API_URL" ] || export GRANTAI_API_URL=https://solonai.com
+    iid=$(envval GRANTAI_INSTALL_ID)
+    if [ -z "$key" ]; then key=$(grep -E '^LICENSE_KEY=' "$PARAMS" 2>/dev/null | cut -d= -f2-); fi
+    [ -n "$key" ] || { echo "usage: grantai-ctl reload-licence --key <licence key>"; exit 2; }
+    cp -p "$ROOT/home/license.jwt" "$ROOT/home/license.jwt.prev" 2>/dev/null || true
+    sudo -u grantai -E "$ROOT/current/bin/grantai-activate" --server --install-id "$iid" activate "$key" "$ROOT/home"
+    LD_LIBRARY_PATH=$ROOT/current/lib "$ROOT/current/bin/grantai-activate" verify "$ROOT/home" >/dev/null \
+      || { echo "new licence does not verify; restoring the previous one"; mv -f "$ROOT/home/license.jwt.prev" "$ROOT/home/license.jwt"; exit 3; }
+    chmod 0600 "$ROOT/home/license.jwt"; chown grantai:grantai "$ROOT/home/license.jwt"
+    # remember the key for the next reload
+    if grep -q '^LICENSE_KEY=' "$PARAMS" 2>/dev/null; then sed -i "s|^LICENSE_KEY=.*|LICENSE_KEY=$key|" "$PARAMS"; else echo "LICENSE_KEY=$key" >> "$PARAMS"; fi
+    systemctl restart grantai
+    sleep 3; "$0" status | grep -A3 '"licence"' || true
+    ;;
+  rotate-token)
+    need_root
+    new=$(openssl rand -hex 32)
+    sed -i "s|^GRANTAI_HTTP_TOKEN=.*|GRANTAI_HTTP_TOKEN=$new|" "$ENVF"
+    if [ -r "$PARAMS" ]; then
+      # shellcheck disable=SC1090
+      . "$PARAMS"
+      KV=$(curl -sS -m 10 -H Metadata:true 'http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://vault.azure.net' | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')
+      python3 -c 'import sys,json; print(json.dumps({"value": sys.argv[1]}))' "$new" | curl -sS -m 20 -o /dev/null -X PUT -H "Authorization: Bearer $KV" -H 'Content-Type: application/json' --data @- \
+        "https://${KEYVAULT_NAME}.vault.azure.net/secrets/${TOKEN_SECRET:-grantai-http-token}?api-version=7.4"
+    fi
+    systemctl restart grantai
+    echo "token rotated; read it from Key Vault secret ${TOKEN_SECRET:-grantai-http-token}"
+    ;;
+  support-bundle)
+    need_root
+    out=/tmp/grantai-support-$(date -u +%Y%m%dT%H%M%SZ).tar.gz
+    tmp=$(mktemp -d)
+    journalctl -u grantai --no-pager -n 2000 > "$tmp/journal.txt" 2>/dev/null || true
+    cp "$ROOT/var/"*.json "$tmp/" 2>/dev/null || true
+    curl -sk -m 10 -H "Authorization: Bearer $(token)" "https://127.0.0.1:$(port)/health" > "$tmp/health.json" 2>/dev/null || true
+    LD_LIBRARY_PATH=$ROOT/current/lib "$ROOT/current/bin/grantai-mcp" --version > "$tmp/version.json" 2>/dev/null || true
+    grep -vE 'TOKEN|KEY|PASSWORD|URL=' "$ENVF" > "$tmp/env-redacted.txt" 2>/dev/null || true
+    tar -czf "$out" -C "$tmp" . && rm -rf "$tmp"
+    echo "$out"
+    ;;
+  *)
+    sed -n '2,8p' "$0"; exit 2 ;;
+esac
