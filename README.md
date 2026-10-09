@@ -7,6 +7,15 @@ a private Postgres server, a Key Vault, an immutable cold-storage container, and
 self-check. Nothing leaves your tenant except the licence check. The 30-day trial is Enterprise tier;
 when it ends, reads continue and writes stop until a licence key is loaded.
 
+## AWS
+
+[![Launch Stack](https://s3.amazonaws.com/cloudformation-examples/cloudformation-launch-stack.png)](https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fgrantai-deploy-public-752036591337.s3.us-east-1.amazonaws.com%2Ftemplates%2F2.0.1%2Ftemplate.yaml&stackName=grantai&param_AgentCoreRegion=us-east-1)
+
+Same collector, same first boot, as a CloudFormation stack in your AWS account: EC2 instance with an
+instance role, private RDS for PostgreSQL, Secrets Manager, S3 cold tier with compliance-mode Object
+Lock, Elastic IP, optional Route 53 record and Let's Encrypt. Fill in your client CIDR and a licence
+(or ask for a trial licence file), tick the IAM capability, and create. Details in `aws/README.md`.
+
 ## What gets deployed
 
 - Virtual network with a private subnet for Postgres; network security group admitting the service
