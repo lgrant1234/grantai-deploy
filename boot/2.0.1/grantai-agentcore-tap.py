@@ -3,7 +3,8 @@
 
 AgentCore writes each agent's telemetry (OpenTelemetry spans incl. prompts, tool calls, completions)
 to one CloudWatch log group per agent: /aws/bedrock-agentcore/runtimes/<agent_id>-<endpoint>, with the
-spans in a "spans" log stream. This tap, running on the collector with its instance role, reads those
+spans in a "spans" log stream (present once CloudWatch Transaction Search is on and the agent carries
+aws-opentelemetry-distro, which AgentCore observability requires anyway). This tap, running on the collector with its instance role, reads those
 spans from a cursor and seals one record per span that carries agent activity (model invocations and
 tool executions) under the caller "agentcore-tap". The tap is the witness: attribution stays with the
 credential that wrote; the agent, session and span ids are part of the content and the source id.
@@ -48,24 +49,50 @@ def save_state(s):
 def iso(ms): return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ms / 1000.0)) if ms else ""
 
 def interesting(span):
-    """Spans that carry agent activity: model invocations (gen_ai.*) and tool executions."""
+    """Spans that carry agent activity: agent turns, model calls and tool executions with their
+    messages (Strands/ADOT emit gen_ai.* span events); duplicates without content are skipped."""
     attrs = span.get("attributes") or {}
     name = span.get("name", "")
-    return any(k.startswith("gen_ai.") for k in attrs) or "tool" in name.lower() or attrs.get("gen_ai.operation.name")
+    if name.startswith("execute_event_loop_cycle"): return False      # repeats the chat span
+    has_events = any(str(e.get("name", "")).startswith("gen_ai.") for e in (span.get("events") or []))
+    return has_events or any(k.startswith("gen_ai.tool.") for k in attrs)
+
+def _parse(v):
+    if isinstance(v, str):
+        try: return json.loads(v)
+        except Exception: return v
+    return v
+
+def _trim(v, limit=6000):
+    t = json.dumps(v, ensure_ascii=False, default=str) if not isinstance(v, str) else v
+    if len(t) <= limit: return v
+    import hashlib
+    return {"truncated": True, "chars": len(t), "sha256": hashlib.sha256(t.encode()).hexdigest(), "head": t[:limit]}
 
 def summarize(span, agent, group):
     a = span.get("attributes") or {}
-    return {"platform": "bedrock-agentcore", "region": REGION, "log_group": group, "agent": agent,
-            "session": a.get("session.id") or a.get("gen_ai.conversation.id") or span.get("session_id"),
+    res = ((span.get("resource") or {}).get("attributes")) or {}
+    svc = res.get("service.name") or a.get("aws.local.service") or ""
+    agent_name = svc.split(".")[0] if svc else agent
+    msgs_in, msgs_out = [], []
+    for e in span.get("events") or []:
+        n = str(e.get("name", "")); ea = e.get("attributes") or {}
+        if n == "gen_ai.choice":
+            msgs_out.append({k: _parse(v) for k, v in ea.items()})
+        elif n.startswith("gen_ai.") and n.endswith(".message"):
+            msgs_in.append({"role": n[len("gen_ai."):-len(".message")], **{k: _parse(v) for k, v in ea.items() if k != "role"}})
+    return {"platform": "bedrock-agentcore", "region": REGION, "log_group": group, "agent": agent_name,
+            "agent_runtime": agent, "session": a.get("session.id") or a.get("gen_ai.conversation.id"),
             "trace": span.get("traceId") or span.get("trace_id"), "span": span.get("spanId") or span.get("span_id"),
-            "name": span.get("name"), "kind": span.get("kind"), "operation": a.get("gen_ai.operation.name"),
+            "parent_span": span.get("parentSpanId"), "name": span.get("name"), "kind": span.get("kind"),
+            "operation": a.get("gen_ai.operation.name"), "provider": a.get("gen_ai.provider.name") or a.get("gen_ai.system"),
             "model": a.get("gen_ai.request.model") or a.get("gen_ai.response.model"),
+            "tools_available": _parse(a.get("gen_ai.agent.tools")) if "gen_ai.agent.tools" in a else None,
             "started_at": span.get("startTimeUnixNano") and iso(int(span["startTimeUnixNano"]) / 1e6),
             "ended_at": span.get("endTimeUnixNano") and iso(int(span["endTimeUnixNano"]) / 1e6),
             "status": (span.get("status") or {}).get("code"),
-            "input": a.get("gen_ai.prompt") or a.get("gen_ai.input.messages") or a.get("input") or [e for e in (span.get("events") or []) if "prompt" in e.get("name", "")],
-            "output": a.get("gen_ai.completion") or a.get("gen_ai.output.messages") or a.get("output") or [e for e in (span.get("events") or []) if "completion" in e.get("name", "")],
-            "tool": {k.split("gen_ai.tool.")[1]: v for k, v in a.items() if k.startswith("gen_ai.tool.")} or None,
+            "input": _trim(msgs_in), "output": _trim(msgs_out),
+            "tool": {k.split("gen_ai.tool.")[1]: _parse(v) for k, v in a.items() if k.startswith("gen_ai.tool.")} or None,
             "usage": {k.split("gen_ai.usage.")[1]: v for k, v in a.items() if k.startswith("gen_ai.usage.")} or None,
             "sealed_by": "agentcore-tap"}
 
@@ -88,7 +115,7 @@ def sweep(state):
                 sid = sp.get("spanId") or sp.get("span_id")
                 if not sid or sid in state["sealed"] or not interesting(sp): continue
                 body = summarize(sp, agent, group)
-                record(json.dumps(body, ensure_ascii=False, default=str), f"agentcore/{agent}/{body.get('session') or 'no-session'}/{sid}")
+                record(json.dumps(body, ensure_ascii=False, default=str), f"agentcore/{body.get('agent') or agent}/{body.get('session') or 'no-session'}/{sid}")
                 state["sealed"].append(sid); state["sealed"] = state["sealed"][-5000:]; n += 1
             state["cursor"][group] = max(since, ev.get("timestamp", since)); save_state(state)
     return n
