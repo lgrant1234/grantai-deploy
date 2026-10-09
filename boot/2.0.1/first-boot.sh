@@ -190,9 +190,11 @@ fi
 # A marketplace base image lacks the runtime libraries the gallery image carries.
 if ! ldconfig -p | grep -q 'libpq.so.5'; then
   echo "installing runtime dependencies"
-  command -v cloud-init >/dev/null && cloud-init status --wait >/dev/null 2>&1 || true
+  # On Azure the extension runs after cloud-init, so waiting avoids the apt race. On AWS this
+  # script IS the user data running inside cloud-init: waiting for it would deadlock.
+  [ "$CLOUD" = aws ] || { command -v cloud-init >/dev/null && cloud-init status --wait >/dev/null 2>&1 || true; }
   if command -v apt-get >/dev/null; then
-    for i in 1 2 3 4 5; do DEBIAN_FRONTEND=noninteractive apt-get update -qq && break; echo "apt-get update retry $i"; sleep 15; done
+    for i in 1 2 3 4 5 6; do DEBIAN_FRONTEND=noninteractive apt-get update -qq && break; echo "apt-get update retry $i"; sleep 15; done
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libpq5 openssl ca-certificates curl python3 >/dev/null
   else
     dnf install -y -q libpq openssl ca-certificates curl python3 >/dev/null
@@ -467,6 +469,9 @@ if [ "$CLOUD" = aws ] && [ -n "${AGENTCORE_REGION:-}" ]; then
   install -m 0755 "$SRC_DIR/grantai-agentcore-tap.py" "$ROOT/bin/grantai-agentcore-tap.py"
   install -m 0644 "$SRC_DIR/grantai-agentcore-tap.service" /etc/systemd/system/grantai-agentcore-tap.service
   if [ ! -s "$ROOT/etc/agentcore-tap.env" ]; then
+    for i in $(seq 1 30); do
+      curl -sk -m 5 -o /dev/null -H "Authorization: Bearer $TOKEN" "https://127.0.0.1:$HTTP_PORT/health" && break; sleep 2
+    done
     MINT=$(curl -sk -m 10 -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
       -d '{"display":"agentcore-tap"}' -w '\n%{http_code}' "https://127.0.0.1:$HTTP_PORT/api/callers/static" || true)
     MINT_CODE=$(printf '%s' "$MINT" | tail -1); MINT_BODY=$(printf '%s' "$MINT" | sed '$d')

@@ -115,7 +115,9 @@ Resources:
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      BucketName: !Sub '${NamePrefix}-audit-cold-${AWS::AccountId}'
+      BucketName: !Sub
+        - '${NamePrefix}-audit-cold-${AWS::AccountId}-${Suffix}'
+        - Suffix: !Select [4, !Split ['-', !Select [2, !Split ['/', !Ref 'AWS::StackId']]]]
       ObjectLockEnabled: true
       ObjectLockConfiguration:
         ObjectLockEnabled: Enabled
