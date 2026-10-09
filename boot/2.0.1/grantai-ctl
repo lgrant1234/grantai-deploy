@@ -26,7 +26,7 @@ case "${1:-status}" in
     ;;
   selfcheck)
     need_root
-    cold=(); grep -q ^GRANTAI_AZURE_STORAGE_KEY= "$ENVF" && cold=(--cold)
+    cold=(); grep -q -E "^GRANTAI_(AZURE_STORAGE_KEY|S3_BUCKET)=" "$ENVF" && cold=(--cold)
     # shellcheck disable=SC1091
     LOCAL_BASE="https://127.0.0.1:$(port)"; LOCAL_CACERT="$ROOT/etc/tls.crt"; [ -r "$ROOT/etc/local-tls.env" ] && . "$ROOT/etc/local-tls.env"
     ca=(); [ -n "$LOCAL_CACERT" ] && ca=(--cacert "$LOCAL_CACERT")

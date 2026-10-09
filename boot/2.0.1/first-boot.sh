@@ -391,13 +391,16 @@ GRANTAI_LLM_API_KEY=$LLM_API_KEY
 GRANTAI_HTTP_PORT=$HTTP_PORT
 LD_LIBRARY_PATH=$ROOT/current/lib
 EOF
+if [ -n "${S3_BUCKET:-}" ]; then cat >> "$ROOT/etc/grantai.env.new" <<EOF
+GRANTAI_S3_BUCKET=$S3_BUCKET
+GRANTAI_S3_REGION=${AWS_REGION:-}
+GRANTAI_S3_PREFIX=$COLD_CONTAINER
+EOF
+fi
 if [ -n "$STORAGE_KEY" ]; then cat >> "$ROOT/etc/grantai.env.new" <<EOF
 GRANTAI_AZURE_STORAGE_ACCOUNT=$STORAGE_ACCOUNT
 GRANTAI_AZURE_STORAGE_KEY=$STORAGE_KEY
 GRANTAI_AZURE_STORAGE_CONTAINER=$COLD_CONTAINER
-GRANTAI_S3_BUCKET=${S3_BUCKET:-}
-GRANTAI_S3_REGION=${AWS_REGION:-}
-GRANTAI_S3_PREFIX=$COLD_CONTAINER
 EOF
 fi
 if [ -n "${AUTH_ISSUER:-}" ]; then cat >> "$ROOT/etc/grantai.env.new" <<EOF
@@ -528,7 +531,7 @@ echo "reviewer enabled (policies $ROOT/etc/review-policies.json)"
 
 # ---------------------------------------------------------------- 12 self-check
 STEP=selfcheck
-COLD_FLAG=(); [ -n "$STORAGE_KEY" ] && COLD_FLAG=(--cold)
+COLD_FLAG=(); { [ -n "$STORAGE_KEY" ] || [ -n "${S3_BUCKET:-}" ]; } && COLD_FLAG=(--cold)
 CACERT_ARGS=(); [ -n "$LOCAL_CACERT" ] && CACERT_ARGS=(--cacert "$LOCAL_CACERT")
 python3 "$ROOT/bin/grantai-selfcheck.py" --base "$LOCAL_BASE" --token-file "$ROOT/etc/grantai.env" \
   "${CACERT_ARGS[@]}" --install-id "$INSTALL_ID" --backend postgres "${COLD_FLAG[@]}" \
